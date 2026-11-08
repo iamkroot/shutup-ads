@@ -14,6 +14,9 @@ Real-time basketball broadcast commercial break detector and stream attenuator p
 # Start live detection and attenuation (auto-targeting Firefox & Sunshine)
 shutup-ads run
 
+# Start with debug screenshots (captures screenshot on every commercial / game transition)
+shutup-ads run --debug
+
 # Dry-run mode (monitoring only, no volume changes)
 shutup-ads run --dry-run
 
