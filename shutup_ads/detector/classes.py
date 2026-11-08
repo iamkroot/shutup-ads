@@ -12,19 +12,32 @@ CHEERING = 61             # "Cheering"
 APPLAUSE = 62             # "Applause"
 SCREAMING = 11            # "Screaming"
 SHOUT = 6                 # "Shout"
+WHOOP = 8                 # "Whoop"
 YELL = 9                  # "Yell"
+HUBBUB = 65               # "Hubbub, speech noise, speech babble"
+ORGAN = 150               # "Organ"
+ELECTRONIC_ORGAN = 151    # "Electronic organ"
 
-BASKETBALL_SPORTS_CLASSES = [
+BASKETBALL_COURT_CLASSES = [
     BASKETBALL_BOUNCE,
     SQUEAK,
     WHISTLE,
     BUZZER,
+]
+
+ARENA_ATMOSPHERE_CLASSES = [
     CROWD,
     CHEERING,
     APPLAUSE,
+    SHOUT,
+    WHOOP,
+    YELL,
+    HUBBUB,
+    ORGAN,
+    ELECTRONIC_ORGAN,
 ]
 
-# Commercial Break & Advertising Indices
+# Commercial Break & Advertising Music Indices
 MUSIC = 132               # "Music"
 BACKGROUND_MUSIC = 262    # "Background music"
 POP_MUSIC = 211           # "Pop music"
@@ -33,6 +46,9 @@ THEME_MUSIC = 263         # "Theme music"
 SOUNDTRACK_MUSIC = 265    # "Soundtrack music"
 HIP_HOP_MUSIC = 212       # "Hip hop music"
 ROCK_MUSIC = 214          # "Rock music"
+ELECTRONIC_MUSIC = 234    # "Electronic music"
+JINGLE_BELL = 197         # "Jingle bell"
+JINGLE_TINKLE = 489       # "Jingle, tinkle"
 RADIO = 519               # "Radio"
 TELEVISION = 518          # "Television"
 
@@ -45,6 +61,9 @@ COMMERCIAL_MUSIC_CLASSES = [
     SOUNDTRACK_MUSIC,
     HIP_HOP_MUSIC,
     ROCK_MUSIC,
+    ELECTRONIC_MUSIC,
+    JINGLE_BELL,
+    JINGLE_TINKLE,
 ]
 
 # Speech Indices
@@ -52,10 +71,19 @@ SPEECH = 0                # "Speech"
 NARRATION = 3             # "Narration, monologue"
 CONVERSATION = 2          # "Conversation"
 
-SPEECH_CLASSES = [
-    SPEECH,
-    NARRATION,
-    CONVERSATION,
+# Contextual Foley (Non-arena ambient cues common in commercial video ads)
+VEHICLE = 294
+CAR = 301
+TRUCK = 310
+BICYCLE = 335
+DOOR = 348
+
+COMMERCIAL_FOLEY_CLASSES = [
+    VEHICLE,
+    CAR,
+    TRUCK,
+    BICYCLE,
+    DOOR,
 ]
 
 # Silence & Transition Indicators

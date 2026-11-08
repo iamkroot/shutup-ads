@@ -1,4 +1,4 @@
-"""State machine for broadcast state tracking with debounce and hysteresis."""
+"""State machine for broadcast state tracking with debounce, hysteresis, and ad guards."""
 
 from __future__ import annotations
 
@@ -29,12 +29,12 @@ class BroadcastStateMachine:
 
     def __init__(
         self,
-        ad_threshold: float = 0.45,
+        ad_threshold: float = 0.40,
         sports_threshold: float = 0.18,
-        ad_trigger_seconds: float = 2.0,
-        sports_trigger_seconds: float = 1.5,
-        min_ad_duration: float = 15.0,
-        max_ad_duration: float = 300.0,
+        ad_trigger_seconds: float = 3.5,     # 3.5s window rides through 2-3s network outro bumpers
+        sports_trigger_seconds: float = 2.0, # Sustained sports required to unmute
+        min_ad_duration: float = 20.0,       # Commercial breaks are at least 20-30s
+        max_ad_duration: float = 270.0,      # 4.5m failsafe auto-unmute
     ):
         self.ad_threshold = ad_threshold
         self.sports_threshold = sports_threshold
@@ -44,11 +44,15 @@ class BroadcastStateMachine:
         self.max_ad_duration = max_ad_duration
 
         self.current_state = BroadcastState.LIVE_SPORTS
-        self.state_enter_time = time.time()
-        self.session_start_time = time.time()
+        self.state_enter_time: float | None = None
+        self.session_start_time: float | None = None
+        self._last_update_time: float | None = None
 
-        # Pending transition timer
-        self._pending_since: float | None = None
+        # Accumulator for pending commercial trigger (leaky bucket)
+        self._pending_accum: float = 0.0
+
+        # Pending sports timer
+        self._pending_sports_since: float | None = None
 
         # Statistics
         self.commercial_break_count = 0
@@ -66,14 +70,17 @@ class BroadcastStateMachine:
     @property
     def time_in_current_state(self) -> float:
         """Seconds spent in current state."""
+        if self.state_enter_time is None:
+            return 0.0
         return time.time() - self.state_enter_time
 
     def _transition_to(self, new_state: BroadcastState, reason: str, now: float) -> StateTransitionEvent:
         prev_state = self.current_state
-        prev_duration = now - self.state_enter_time
+        prev_duration = (now - self.state_enter_time) if self.state_enter_time is not None else 0.0
         self.current_state = new_state
         self.state_enter_time = now
-        self._pending_since = None
+        self._pending_accum = 0.0
+        self._pending_sports_since = None
 
         if prev_state == BroadcastState.COMMERCIAL_BREAK and new_state in (BroadcastState.LIVE_SPORTS, BroadcastState.PENDING_SPORTS):
             self.total_commercial_seconds += prev_duration
@@ -92,12 +99,18 @@ class BroadcastStateMachine:
         return event
 
     def update(self, metrics: DetectionMetrics, current_time: float | None = None) -> StateTransitionEvent | None:
-        """Update state machine with new chunk metrics.
-
-        Returns StateTransitionEvent if a transition occurred, else None.
-        """
+        """Update state machine with new chunk metrics."""
         now = current_time if current_time is not None else time.time()
-        duration = now - self.state_enter_time
+
+        if self.session_start_time is None:
+            self.session_start_time = now
+            self.state_enter_time = now
+            self._last_update_time = now
+            dt = 0.5
+        else:
+            dt = max(0.0, min(2.0, now - (self._last_update_time or now)))
+            self._last_update_time = now
+        duration = now - (self.state_enter_time or now)
 
         # Failsafe: max ad duration auto-restore
         if self.is_commercial and duration > self.max_ad_duration:
@@ -110,46 +123,53 @@ class BroadcastStateMachine:
         if self.current_state == BroadcastState.LIVE_SPORTS:
             if metrics.ad_probability >= self.ad_threshold:
                 self.current_state = BroadcastState.PENDING_COMMERCIAL
-                self._pending_since = now
+                self._pending_accum = 0.0
             return None
 
         elif self.current_state == BroadcastState.PENDING_COMMERCIAL:
-            if metrics.ad_probability < self.ad_threshold:
-                # Cancel pending
-                self.current_state = BroadcastState.LIVE_SPORTS
-                self._pending_since = None
-                return None
+            if metrics.ad_probability >= self.ad_threshold:
+                self._pending_accum += dt
             else:
-                elapsed = now - (self._pending_since or now)
-                if elapsed >= self.ad_trigger_seconds:
-                    return self._transition_to(
-                        BroadcastState.COMMERCIAL_BREAK,
-                        f"Sustained ad probability ({metrics.ad_probability:.2f} >= {self.ad_threshold:.2f} for {elapsed:.1f}s)",
-                        now,
-                    )
-                return None
+                # If ad probability drops significantly (e.g. below half threshold), cancel immediately
+                if metrics.ad_probability < self.ad_threshold * 0.50:
+                    self.current_state = BroadcastState.LIVE_SPORTS
+                    self._pending_accum = 0.0
+                    return None
+                # Otherwise decay smoothly across dialogue pauses
+                self._pending_accum = max(0.0, self._pending_accum - 0.7 * dt)
+                if self._pending_accum <= 0.0:
+                    self.current_state = BroadcastState.LIVE_SPORTS
+                    return None
+
+            if self._pending_accum >= self.ad_trigger_seconds:
+                return self._transition_to(
+                    BroadcastState.COMMERCIAL_BREAK,
+                    f"Sustained ad probability ({metrics.ad_probability:.2f} >= {self.ad_threshold:.2f} for {self._pending_accum:.1f}s)",
+                    now,
+                )
+            return None
 
         elif self.current_state == BroadcastState.COMMERCIAL_BREAK:
-            # Check minimum ad duration guard (commercial breaks are at least 15-20s)
+            # Check minimum ad duration guard (commercial breaks are at least 20s)
             if duration < self.min_ad_duration:
                 return None
 
-            # Return to sports ONLY if genuine basketball court action or crowd sounds return!
-            # Silence cuts, music dips, or dialogue pauses in the ad must NOT return to sports!
-            if metrics.sports_score >= self.sports_threshold:
+            # Return to sports ONLY on positive evidence of basketball court action or crowd sounds!
+            # Dialogue gaps, music dips, or silence cuts in ads will NOT return to sports.
+            if metrics.sports_score >= self.sports_threshold and metrics.music_score < 0.12:
                 self.current_state = BroadcastState.PENDING_SPORTS
-                self._pending_since = now
+                self._pending_sports_since = now
             return None
 
         elif self.current_state == BroadcastState.PENDING_SPORTS:
             # Check if sports condition holds
-            if metrics.sports_score < self.sports_threshold:
-                # Cancel pending, revert to commercial
+            if metrics.sports_score < self.sports_threshold or metrics.music_score >= 0.12:
+                # Revert back to commercial break
                 self.current_state = BroadcastState.COMMERCIAL_BREAK
-                self._pending_since = None
+                self._pending_sports_since = None
                 return None
             else:
-                elapsed = now - (self._pending_since or now)
+                elapsed = now - (self._pending_sports_since or now)
                 if elapsed >= self.sports_trigger_seconds:
                     return self._transition_to(
                         BroadcastState.LIVE_SPORTS,
@@ -162,4 +182,5 @@ class BroadcastStateMachine:
 
     def force_state(self, state: BroadcastState, reason: str = "Manual override") -> StateTransitionEvent:
         """Force state transition manually."""
-        return self._transition_to(state, reason, time.time())
+        now = time.time()
+        return self._transition_to(state, reason, now)

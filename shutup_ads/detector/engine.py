@@ -1,4 +1,4 @@
-"""Basketball commercial break detection engine."""
+"""Basketball commercial break detection engine with asymmetric evidence accumulation."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from typing import Sequence
 import numpy as np
 
 from shutup_ads.detector.classes import (
-    APPLAUSE,
+    ARENA_ATMOSPHERE_CLASSES,
     BASKETBALL_BOUNCE,
-    BASKETBALL_SPORTS_CLASSES,
+    BASKETBALL_COURT_CLASSES,
     BUZZER,
     CHEERING,
+    COMMERCIAL_FOLEY_CLASSES,
     COMMERCIAL_MUSIC_CLASSES,
     CROWD,
-    JINGLE_MUSIC,
     MUSIC,
     NARRATION,
     SILENCE,
@@ -31,12 +31,12 @@ class DetectionMetrics:
     """Detailed acoustic metrics for a single audio window."""
     sports_score: float             # Overall basketball action confidence [0.0, 1.0]
     commercial_score: float         # Raw commercial / advertising score [0.0, 1.0]
-    ad_probability: float           # Final fused ad probability [0.0, 1.0]
-    crowd_score: float              # Crowd / Cheering level
+    ad_probability: float           # Final fused smoothed ad probability [0.0, 1.0]
+    crowd_score: float              # Crowd / Cheering / Arena organ level
     court_score: float              # Basketball bounce / squeak / whistle level
     music_score: float              # Commercial music / jingle level
-    speech_score: float             # Announcer / narration speech level
-    clean_speech_score: float       # Studio speech without crowd noise
+    speech_score: float             # Speech / dialogue level
+    clean_speech_score: float       # In-ad narration / dialogue level
     silence_score: float            # Silence class score
     rms_energy: float               # Raw audio RMS level
     is_cut_candidate: bool          # Silence dip indicating commercial cut boundary
@@ -50,21 +50,24 @@ class BasketballDetector:
         self,
         classifier: CalibratedClassifier | None = None,
         ad_threshold: float = 0.40,
-        sports_threshold: float = 0.20,
-        ema_alpha: float = 0.60,  # Responsive smoothing factor
+        sports_threshold: float = 0.18,
+        alpha_attack: float = 0.35,   # Fast attack when ad evidence increases
+        alpha_release: float = 0.10,  # Slow release to maintain confidence across dialogue gaps
+        ema_alpha: float | None = None, # Backwards compatibility
     ):
         self.classifier = classifier
         self.ad_threshold = ad_threshold
         self.sports_threshold = sports_threshold
-        self.ema_alpha = ema_alpha
+        self.alpha_attack = ema_alpha if ema_alpha is not None else alpha_attack
+        self.alpha_release = ema_alpha if ema_alpha is not None else alpha_release
 
         self._smoothed_ad_prob: float = 0.0
-        self._smoothed_sports_score: float = 0.5
+        self._smoothed_sports_score: float | None = None
 
     def reset(self) -> None:
         """Reset internal smoothing states."""
         self._smoothed_ad_prob = 0.0
-        self._smoothed_sports_score = 0.5
+        self._smoothed_sports_score = None
 
     def evaluate(
         self,
@@ -100,21 +103,18 @@ class BasketballDetector:
         buzzer = float(frame_mean[BUZZER])
         court_action = max(bounce * 1.5, squeak * 1.2, whistle * 1.8, buzzer * 1.5)
 
-        # Crowd & arena atmosphere
-        crowd = float(frame_mean[CROWD])
-        cheer = float(frame_mean[CHEERING])
-        applause = float(frame_mean[APPLAUSE])
-        crowd_cheer = max(crowd, cheer, applause, (crowd + cheer + applause) / 2.0)
+        # Arena atmosphere (crowd, cheer, applause, chant, stadium organ)
+        arena_sub = frame_mean[ARENA_ATMOSPHERE_CLASSES]
+        crowd_cheer = float(np.max(arena_sub))
 
-        # Sports score is strictly court action and arena crowd sounds.
-        # Human speech is intentionally excluded so voice timbre in commercials never triggers sports!
+        # Sports score is strictly court action and arena crowd/organ sounds.
+        # Human speech is excluded so voice timbre in commercials never triggers sports.
         sports_score = float(np.clip(
             max(crowd_cheer, court_action, 0.7 * crowd_cheer + 0.5 * court_action),
             0.0, 1.0
         ))
 
         # 2. Commercial Indicators:
-        # Commercial breaks require prominent, continuous studio music or jingles (> 0.18).
         music_sub = frame_mean[COMMERCIAL_MUSIC_CLASSES]
         music_score = float(np.max(music_sub))
 
@@ -122,13 +122,20 @@ class BasketballDetector:
         narration = float(frame_mean[NARRATION])
         speech_score = max(speech, narration)
 
-        if music_score < 0.18:
-            heuristic_ad = 0.0
-        else:
-            # Voiceover in commercial strengthens ad confidence when paired with studio music
-            ad_signal = max(music_score, 0.60 * music_score + 0.40 * speech_score)
-            sports_penalty = 1.5 * sports_score
-            heuristic_ad = float(np.clip(ad_signal - sports_penalty, 0.0, 1.0))
+        foley_sub = float(np.max(frame_mean[COMMERCIAL_FOLEY_CLASSES])) if COMMERCIAL_FOLEY_CLASSES else 0.0
+        ad_speech = max(narration, 0.5 * speech, foley_sub)
+
+        # Soft continuous music signal: in live gameplay music was never > 0.045
+        music_norm = float(np.clip((music_score - 0.05) / 0.25, 0.0, 1.0))
+
+        # Evidence accumulation: when commercial music is present, dialogue and foley augment confidence
+        ad_signal = music_norm * 0.70 + (music_norm * ad_speech) * 0.30
+        if music_score >= 0.25:
+            ad_signal = max(ad_signal, music_score)
+
+        # Live sports penalty: if actual basketball action/crowd is present, heavily suppress ad signal
+        sports_penalty = 2.0 * sports_score
+        heuristic_ad = float(np.clip(ad_signal - sports_penalty, 0.0, 1.0))
 
         # 3. Optional Trained Embedding Head
         embedding_ad_prob: float | None = None
@@ -141,13 +148,21 @@ class BasketballDetector:
         else:
             raw_ad_prob = heuristic_ad
 
-        # 5. Temporal Exponential Moving Average (EMA)
+        # 5. Asymmetric Temporal EMA Smoothing
+        if raw_ad_prob >= self._smoothed_ad_prob:
+            alpha = self.alpha_attack
+        else:
+            alpha = self.alpha_release
+
         self._smoothed_ad_prob = float(
-            self.ema_alpha * raw_ad_prob + (1.0 - self.ema_alpha) * self._smoothed_ad_prob
+            alpha * raw_ad_prob + (1.0 - alpha) * self._smoothed_ad_prob
         )
-        self._smoothed_sports_score = float(
-            self.ema_alpha * sports_score + (1.0 - self.ema_alpha) * self._smoothed_sports_score
-        )
+        if self._smoothed_sports_score is None:
+            self._smoothed_sports_score = float(sports_score)
+        else:
+            self._smoothed_sports_score = float(
+                0.40 * sports_score + 0.60 * self._smoothed_sports_score
+            )
 
         # 6. Silence / Cut detection
         silence_score = float(frame_mean[SILENCE])
@@ -161,7 +176,7 @@ class BasketballDetector:
             court_score=court_action,
             music_score=music_score,
             speech_score=speech_score,
-            clean_speech_score=speech_score,
+            clean_speech_score=ad_speech,
             silence_score=silence_score,
             rms_energy=rms,
             is_cut_candidate=is_cut,
