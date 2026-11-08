@@ -99,6 +99,16 @@ class PulseController:
             logger.warning("Failed to query default sink via pulsectl: %s", e)
             self.default_sink_name = "alsa_output.pci-0000_63_00.6.pro-output-0"
 
+        # Unload any stale leftover bridge modules
+        try:
+            res = subprocess.run(["pactl", "list", "short", "modules"], capture_output=True, text=True).stdout
+            for line in res.splitlines():
+                if "shutup_ads_bridge" in line:
+                    mod_id = line.split()[0]
+                    subprocess.run(["pactl", "unload-module", mod_id], capture_output=True)
+        except Exception:
+            pass
+
         logger.info("Setting up Virtual Audio Bridge with output to: %s", self.default_sink_name)
 
         # 1. Load null sink
@@ -197,7 +207,7 @@ class PulseController:
             for block in res.split("Sink Input #")[1:]:
                 lines = block.splitlines()
                 si_id = int(lines[0].strip())
-                if f"pulse.module.id = \"{self._bridge_loop_mod}\"" in block or "loopback" in block.lower():
+                if f"pulse.module.id = \"{self._bridge_loop_mod}\"" in block:
                     self._loopback_si_id = si_id
                     return si_id
         except Exception:
