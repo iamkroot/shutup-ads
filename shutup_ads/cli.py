@@ -380,20 +380,20 @@ def main() -> None:
     run_parser.add_argument(
         "--ad-thresh",
         type=float,
-        default=0.40,
-        help="Ad probability threshold to trigger commercial state (default: 0.40)",
+        default=0.50,
+        help="Ad probability threshold to trigger commercial state (default: 0.50)",
     )
     run_parser.add_argument(
         "--sports-thresh",
         type=float,
-        default=0.20,
-        help="Sports action score threshold to return to live sports (default: 0.20)",
+        default=0.25,
+        help="Sports action score threshold to return to live sports (default: 0.25)",
     )
     run_parser.add_argument(
         "--ad-delay",
         type=float,
-        default=1.0,
-        help="Persistence seconds required before entering commercial state (default: 1.0)",
+        default=2.0,
+        help="Persistence seconds required before entering commercial state (default: 2.0)",
     )
     run_parser.add_argument(
         "--sports-delay",

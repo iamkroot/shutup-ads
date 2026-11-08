@@ -92,41 +92,46 @@ class BasketballDetector:
         # 1. Extract class probabilities (mean across window frames)
         frame_mean = np.mean(scores, axis=0)
 
-        # Sports Indicators
-        crowd = float(frame_mean[CROWD])
-        cheer = float(frame_mean[CHEERING])
-        applause = float(frame_mean[APPLAUSE])
-        crowd_cheer = max(crowd, cheer, applause, (crowd + cheer + applause) / 2.0)
-
+        # Sports Indicators:
+        # Court action: bounce, squeak, whistle, buzzer
         bounce = float(frame_mean[BASKETBALL_BOUNCE])
         squeak = float(frame_mean[SQUEAK])
         whistle = float(frame_mean[WHISTLE])
         buzzer = float(frame_mean[BUZZER])
         court_action = max(bounce * 1.5, squeak * 1.2, whistle * 1.5, buzzer * 1.2)
 
-        # Basketball sports score
-        sports_score = float(np.clip(
-            0.6 * crowd_cheer + 0.4 * court_action,
-            0.0, 1.0
-        ))
+        # Crowd & arena atmosphere
+        crowd = float(frame_mean[CROWD])
+        cheer = float(frame_mean[CHEERING])
+        applause = float(frame_mean[APPLAUSE])
+        crowd_cheer = max(crowd, cheer, applause, (crowd + cheer + applause) / 2.0)
 
-        # 2. Commercial Indicators
+        # Commercial music indicators
         music_sub = frame_mean[COMMERCIAL_MUSIC_CLASSES]
         music_score = float(np.max(music_sub))
 
+        # Commentary speech:
+        # In sports broadcasts, play-by-play commentators talk continuously.
+        # When music is absent/low (< 0.15), commentary is a direct indicator of LIVE GAMEPLAY.
         speech = float(frame_mean[SPEECH])
         narration = float(frame_mean[NARRATION])
         speech_score = max(speech, narration)
+        commentary_score = speech_score * max(0.0, 1.0 - 4.0 * music_score)
 
-        # Clean speech: speech in absence of stadium crowd
-        clean_speech = float(speech_score * max(0.0, 1.0 - 3.5 * crowd_cheer))
+        # Basketball sports score
+        sports_score = float(np.clip(
+            max(crowd_cheer, court_action, 0.60 * commentary_score),
+            0.0, 1.0
+        ))
 
-        # Commercial raw heuristic:
-        # Commercial is present if there is high studio music OR clean voiceover,
-        # contrasted with absence of basketball court / crowd sounds.
-        ad_signal = max(music_score, clean_speech * 1.2, 0.70 * music_score + 0.40 * clean_speech)
-        sports_penalty = 1.5 * sports_score
-        heuristic_ad = float(np.clip(ad_signal - sports_penalty, 0.0, 1.0))
+        # 2. Commercial Indicators:
+        # Commercial breaks require prominent, continuous studio music (> 0.20).
+        # Without music, broadcast audio is virtually never an advertisement.
+        if music_score < 0.20:
+            heuristic_ad = 0.0
+        else:
+            sports_penalty = 1.3 * sports_score
+            heuristic_ad = float(np.clip(music_score - sports_penalty, 0.0, 1.0))
 
         # 3. Optional Trained Embedding Head
         embedding_ad_prob: float | None = None
@@ -159,7 +164,7 @@ class BasketballDetector:
             court_score=court_action,
             music_score=music_score,
             speech_score=speech_score,
-            clean_speech_score=clean_speech,
+            clean_speech_score=commentary_score,
             silence_score=silence_score,
             rms_energy=rms,
             is_cut_candidate=is_cut,

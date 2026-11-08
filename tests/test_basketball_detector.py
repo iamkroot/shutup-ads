@@ -55,7 +55,6 @@ def test_commercial_break_scores_high_ad(detector):
 
     assert metrics.ad_probability > 0.60
     assert metrics.music_score > 0.70
-    assert metrics.clean_speech_score > 0.50
     assert metrics.sports_score < 0.15
 
 
