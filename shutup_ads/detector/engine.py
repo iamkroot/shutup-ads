@@ -49,9 +49,9 @@ class BasketballDetector:
     def __init__(
         self,
         classifier: CalibratedClassifier | None = None,
-        ad_threshold: float = 0.55,
-        sports_threshold: float = 0.30,
-        ema_alpha: float = 0.40,  # Exponential smoothing factor
+        ad_threshold: float = 0.40,
+        sports_threshold: float = 0.20,
+        ema_alpha: float = 0.60,  # Responsive smoothing factor
     ):
         self.classifier = classifier
         self.ad_threshold = ad_threshold
@@ -121,11 +121,12 @@ class BasketballDetector:
         # Clean speech: speech in absence of stadium crowd
         clean_speech = float(speech_score * max(0.0, 1.0 - 3.5 * crowd_cheer))
 
-        # Commercial raw heuristic: continuous studio music + clean voiceover
-        heuristic_ad = float(np.clip(
-            0.70 * music_score + 0.30 * clean_speech - 0.75 * sports_score,
-            0.0, 1.0
-        ))
+        # Commercial raw heuristic:
+        # Commercial is present if there is high studio music OR clean voiceover,
+        # contrasted with absence of basketball court / crowd sounds.
+        ad_signal = max(music_score, clean_speech * 1.2, 0.70 * music_score + 0.40 * clean_speech)
+        sports_penalty = 1.5 * sports_score
+        heuristic_ad = float(np.clip(ad_signal - sports_penalty, 0.0, 1.0))
 
         # 3. Optional Trained Embedding Head
         embedding_ad_prob: float | None = None

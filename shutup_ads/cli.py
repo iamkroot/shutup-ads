@@ -168,15 +168,16 @@ def cmd_run(args: argparse.Namespace) -> None:
                     active_streams = controller.apply_commercial_state(state_machine.is_commercial)
 
                     now = time.time()
-                    if now - last_log_time >= 5.0:
+                    if now - last_log_time >= 3.0:
                         last_log_time = now
-                        stream_summary = ", ".join(f"#{s.index} {s.app_name} ({int(s.current_volume*100)}%)" for s in active_streams)
+                        stream_summary = ", ".join(f"Stream {s.index}: {s.app_name} ({int(s.current_volume*100)}%)" for s in active_streams)
                         console.print(
                             f"[dim]{time.strftime('%H:%M:%S')}[/dim] "
                             f"State: [bold]{state_machine.current_state.value}[/bold] | "
                             f"Ad Prob: {metrics.ad_probability*100:4.1f}% | "
                             f"Sports: {metrics.sports_score*100:4.1f}% | "
-                            f"Streams: [{stream_summary or 'none'}]"
+                            f"Streams: [{stream_summary or 'none'}]",
+                            highlight=False,
                         )
             else:
                 with Live(console=console, refresh_per_second=4, screen=False) as live:
@@ -379,26 +380,26 @@ def main() -> None:
     run_parser.add_argument(
         "--ad-thresh",
         type=float,
-        default=0.50,
-        help="Ad probability threshold to trigger commercial state (default: 0.50)",
+        default=0.40,
+        help="Ad probability threshold to trigger commercial state (default: 0.40)",
     )
     run_parser.add_argument(
         "--sports-thresh",
         type=float,
-        default=0.30,
-        help="Sports action score threshold to return to live sports (default: 0.30)",
+        default=0.20,
+        help="Sports action score threshold to return to live sports (default: 0.20)",
     )
     run_parser.add_argument(
         "--ad-delay",
         type=float,
-        default=1.5,
-        help="Persistence seconds required before entering commercial state (default: 1.5)",
+        default=1.0,
+        help="Persistence seconds required before entering commercial state (default: 1.0)",
     )
     run_parser.add_argument(
         "--sports-delay",
         type=float,
-        default=1.5,
-        help="Persistence seconds required before returning to sports state (default: 1.5)",
+        default=1.0,
+        help="Persistence seconds required before returning to sports state (default: 1.0)",
     )
 
     # list-devices command

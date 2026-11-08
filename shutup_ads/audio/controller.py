@@ -133,6 +133,32 @@ class PulseController:
             logger.warning("Could not query default sink monitor: %s, falling back to default.monitor", e)
             return "default.monitor"
 
+    def _set_stream_volume(self, stream_idx: int, target_vol: float, mute: bool = False) -> None:
+        """Set volume on a sink input using pulsectl with pactl CLI fallback."""
+        success = False
+        try:
+            pulse = self._get_pulse()
+            si = pulse.sink_input_info(stream_idx)
+            pulse.volume_set_all_chans(si, target_vol)
+            pulse.sink_input_volume_set(si.index, si.volume)
+            if mute:
+                pulse.sink_input_mute(stream_idx, 1)
+            else:
+                pulse.sink_input_mute(stream_idx, 0)
+            success = True
+        except Exception as e:
+            logger.debug("pulsectl volume set failed on #%d (%s), trying pactl fallback", stream_idx, e)
+
+        if not success:
+            try:
+                import subprocess
+                vol_pct = f"{int(round(target_vol * 100))}%"
+                subprocess.run(["pactl", "set-sink-input-volume", str(stream_idx), vol_pct], check=True)
+                mute_arg = "1" if mute else "0"
+                subprocess.run(["pactl", "set-sink-input-mute", str(stream_idx), mute_arg], check=True)
+            except Exception as e:
+                logger.warning("Failed to set volume on #%d via pactl fallback: %s", stream_idx, e)
+
     def apply_commercial_state(self, is_commercial: bool) -> list[StreamInfo]:
         """Apply attenuation/muting if in commercial, or restore volume if live sports.
 
@@ -142,41 +168,26 @@ class PulseController:
             return self.scan_streams()
 
         active_targets = self.scan_streams()
-        try:
-            pulse = self._get_pulse()
-            for stream in active_targets:
-                try:
-                    si = pulse.sink_input_info(stream.index)
-                except Exception:
-                    # Stream may have closed
-                    continue
-
-                if is_commercial:
-                    if not stream.is_attenuated:
-                        logger.info("Commercial detected -> Attenuating %s (#%d)", stream.app_name, stream.index)
-                        if self.action_mode == "mute":
-                            pulse.sink_input_mute(stream.index, 1)
-                            stream.is_muted = True
-                        else:
-                            # Attenuate volume to target pct (relative to baseline)
-                            target_vol = min(stream.baseline_volume, self.attenuate_volume)
-                            pulse.volume_set_all_flat(si, target_vol)
-                            stream.current_volume = target_vol
-                        stream.is_attenuated = True
-                else:
-                    if stream.is_attenuated:
-                        logger.info("Live sports detected -> Restoring %s (#%d) volume to %.0f%%",
-                                    stream.app_name, stream.index, stream.baseline_volume * 100)
-                        if self.action_mode == "mute":
-                            pulse.sink_input_mute(stream.index, 0)
-                            stream.is_muted = False
-                        # Restore original baseline volume
-                        pulse.volume_set_all_flat(si, stream.baseline_volume)
-                        stream.current_volume = stream.baseline_volume
-                        stream.is_attenuated = False
-        except Exception as e:
-            logger.warning("Error applying stream volume state: %s", e)
-            self._pulse = None
+        for stream in active_targets:
+            if is_commercial:
+                if not stream.is_attenuated:
+                    logger.info("Commercial detected -> Attenuating %s (#%d)", stream.app_name, stream.index)
+                    if self.action_mode == "mute":
+                        self._set_stream_volume(stream.index, 0.0, mute=True)
+                        stream.is_muted = True
+                    else:
+                        target_vol = min(stream.baseline_volume, self.attenuate_volume)
+                        self._set_stream_volume(stream.index, target_vol, mute=False)
+                        stream.current_volume = target_vol
+                    stream.is_attenuated = True
+            else:
+                if stream.is_attenuated:
+                    logger.info("Live sports detected -> Restoring %s (#%d) volume to %.0f%%",
+                                stream.app_name, stream.index, stream.baseline_volume * 100)
+                    self._set_stream_volume(stream.index, stream.baseline_volume, mute=False)
+                    stream.is_muted = False
+                    stream.current_volume = stream.baseline_volume
+                    stream.is_attenuated = False
 
         return active_targets
 
@@ -185,25 +196,15 @@ class PulseController:
         if not self._tracked_streams:
             return
         logger.info("Restoring all streams to baseline volumes on exit...")
-        try:
-            pulse = self._get_pulse()
-            for idx, stream in list(self._tracked_streams.items()):
-                try:
-                    si = pulse.sink_input_info(idx)
-                    pulse.volume_set_all_flat(si, stream.baseline_volume)
-                    pulse.sink_input_mute(idx, 0)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        finally:
-            if self._pulse:
-                try:
-                    self._pulse.close()
-                except Exception:
-                    pass
-                self._pulse = None
-            self._tracked_streams.clear()
+        for idx, stream in list(self._tracked_streams.items()):
+            self._set_stream_volume(idx, stream.baseline_volume, mute=False)
+        if self._pulse:
+            try:
+                self._pulse.close()
+            except Exception:
+                pass
+            self._pulse = None
+        self._tracked_streams.clear()
 
     def _handle_signal(self, signum: int, frame: Any) -> None:
         """Signal handler to ensure cleanup on SIGINT or SIGTERM."""

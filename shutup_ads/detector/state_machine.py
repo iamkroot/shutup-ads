@@ -29,11 +29,11 @@ class BroadcastStateMachine:
 
     def __init__(
         self,
-        ad_threshold: float = 0.50,
-        sports_threshold: float = 0.30,
-        ad_trigger_seconds: float = 1.5,
-        sports_trigger_seconds: float = 1.5,
-        min_ad_duration: float = 10.0,
+        ad_threshold: float = 0.40,
+        sports_threshold: float = 0.20,
+        ad_trigger_seconds: float = 1.0,
+        sports_trigger_seconds: float = 1.0,
+        min_ad_duration: float = 6.0,
         max_ad_duration: float = 300.0,
     ):
         self.ad_threshold = ad_threshold
