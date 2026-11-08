@@ -419,8 +419,8 @@ def main() -> None:
     run_parser.add_argument(
         "--sports-thresh",
         type=float,
-        default=0.18,
-        help="Sports action score threshold to return to live sports (default: 0.18)",
+        default=0.10,
+        help="Sports action score threshold to return to live sports (default: 0.10)",
     )
     run_parser.add_argument(
         "--ad-delay",
@@ -431,8 +431,8 @@ def main() -> None:
     run_parser.add_argument(
         "--sports-delay",
         type=float,
-        default=2.0,
-        help="Persistence seconds required before returning to sports state (default: 2.0)",
+        default=1.0,
+        help="Persistence seconds required before returning to sports state (default: 1.0)",
     )
 
     # list-devices command
