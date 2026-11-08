@@ -29,11 +29,11 @@ class BroadcastStateMachine:
 
     def __init__(
         self,
-        ad_threshold: float = 0.50,
-        sports_threshold: float = 0.25,
+        ad_threshold: float = 0.45,
+        sports_threshold: float = 0.18,
         ad_trigger_seconds: float = 2.0,
-        sports_trigger_seconds: float = 1.0,
-        min_ad_duration: float = 5.0,
+        sports_trigger_seconds: float = 1.5,
+        min_ad_duration: float = 15.0,
         max_ad_duration: float = 300.0,
     ):
         self.ad_threshold = ad_threshold
@@ -130,22 +130,20 @@ class BroadcastStateMachine:
                 return None
 
         elif self.current_state == BroadcastState.COMMERCIAL_BREAK:
-            # Check minimum ad duration guard
+            # Check minimum ad duration guard (commercial breaks are at least 15-20s)
             if duration < self.min_ad_duration:
                 return None
 
-            # Condition to return to sports:
-            # Either high basketball sports score OR low ad probability
-            if (metrics.sports_score >= self.sports_threshold or
-                metrics.ad_probability < (self.ad_threshold * 0.65)):
+            # Return to sports ONLY if genuine basketball court action or crowd sounds return!
+            # Silence cuts, music dips, or dialogue pauses in the ad must NOT return to sports!
+            if metrics.sports_score >= self.sports_threshold:
                 self.current_state = BroadcastState.PENDING_SPORTS
                 self._pending_since = now
             return None
 
         elif self.current_state == BroadcastState.PENDING_SPORTS:
             # Check if sports condition holds
-            if (metrics.sports_score < self.sports_threshold and
-                metrics.ad_probability >= (self.ad_threshold * 0.65)):
+            if metrics.sports_score < self.sports_threshold:
                 # Cancel pending, revert to commercial
                 self.current_state = BroadcastState.COMMERCIAL_BREAK
                 self._pending_since = None
@@ -155,7 +153,7 @@ class BroadcastStateMachine:
                 if elapsed >= self.sports_trigger_seconds:
                     return self._transition_to(
                         BroadcastState.LIVE_SPORTS,
-                        f"Basketball action resumed (sports={metrics.sports_score:.2f}, ad_prob={metrics.ad_probability:.2f} for {elapsed:.1f}s)",
+                        f"Basketball action resumed (sports={metrics.sports_score:.2f} >= {self.sports_threshold:.2f} for {elapsed:.1f}s)",
                         now,
                     )
                 return None
