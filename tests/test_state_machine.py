@@ -5,14 +5,15 @@ from shutup_ads.detector.engine import DetectionMetrics
 from shutup_ads.detector.state_machine import BroadcastState, BroadcastStateMachine
 
 
-def make_dummy_metrics(ad_prob: float, sports_score: float) -> DetectionMetrics:
+def make_dummy_metrics(ad_prob: float, sports_score: float, music_score: float | None = None) -> DetectionMetrics:
+    mus = music_score if music_score is not None else (0.0 if sports_score > 0.3 else ad_prob)
     return DetectionMetrics(
         sports_score=sports_score,
         commercial_score=ad_prob,
         ad_probability=ad_prob,
         crowd_score=sports_score,
         court_score=sports_score,
-        music_score=ad_prob,
+        music_score=mus,
         speech_score=0.5,
         clean_speech_score=ad_prob,
         silence_score=0.0,

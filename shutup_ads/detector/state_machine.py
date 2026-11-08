@@ -30,10 +30,10 @@ class BroadcastStateMachine:
     def __init__(
         self,
         ad_threshold: float = 0.40,
-        sports_threshold: float = 0.10,
+        sports_threshold: float = 0.06,
         ad_trigger_seconds: float = 3.5,     # 3.5s window rides through 2-3s network outro bumpers
         sports_trigger_seconds: float = 1.0, # Fast 1.0s response when game returns
-        min_ad_duration: float = 12.0,       # Minimum ad duration guard
+        min_ad_duration: float = 15.0,       # Minimum ad duration guard
         max_ad_duration: float = 270.0,      # 4.5m failsafe auto-unmute
     ):
         self.ad_threshold = ad_threshold
@@ -154,30 +154,20 @@ class BroadcastStateMachine:
             if duration < self.min_ad_duration:
                 return None
 
-            # Two pathways to detect return to the game:
-            # 1. Direct basketball action (bounce, squeak, whistle, crowd cheer)
-            is_sports = (metrics.sports_score >= self.sports_threshold and metrics.music_score < 0.12)
-            # 2. Commercial music is completely dead (< 0.05) and broadcast commentary / arena audio has resumed
-            is_commentary_resume = (
-                metrics.music_score < 0.05 and
-                metrics.ad_probability < 0.15 and
-                (metrics.speech_score >= 0.45 or metrics.sports_score >= 0.02)
-            )
+            # Condition to return to sports:
+            # Positive basketball action/crowd noise (>= 0.06) with commercial music absent (< 0.08)
+            # Commercial dialogue (where sports_score is ~0.00) will NOT trigger return!
+            is_sports = (metrics.sports_score >= self.sports_threshold and metrics.music_score < 0.08)
 
-            if is_sports or is_commentary_resume:
+            if is_sports:
                 self.current_state = BroadcastState.PENDING_SPORTS
                 self._pending_sports_since = now
             return None
 
         elif self.current_state == BroadcastState.PENDING_SPORTS:
-            is_sports = (metrics.sports_score >= self.sports_threshold and metrics.music_score < 0.12)
-            is_commentary_resume = (
-                metrics.music_score < 0.05 and
-                metrics.ad_probability < 0.15 and
-                (metrics.speech_score >= 0.45 or metrics.sports_score >= 0.02)
-            )
+            is_sports = (metrics.sports_score >= self.sports_threshold and metrics.music_score < 0.08)
 
-            if not (is_sports or is_commentary_resume):
+            if not is_sports:
                 # Revert back to commercial break
                 self.current_state = BroadcastState.COMMERCIAL_BREAK
                 self._pending_sports_since = None
@@ -185,10 +175,9 @@ class BroadcastStateMachine:
             else:
                 elapsed = now - (self._pending_sports_since or now)
                 if elapsed >= self.sports_trigger_seconds:
-                    reason = "Basketball court action" if is_sports else "Commercial music ended & commentary resumed"
                     return self._transition_to(
                         BroadcastState.LIVE_SPORTS,
-                        f"{reason} (sports={metrics.sports_score:.2f}, music={metrics.music_score:.2f} for {elapsed:.1f}s)",
+                        f"Basketball action resumed (sports={metrics.sports_score:.2f} >= {self.sports_threshold:.2f} for {elapsed:.1f}s)",
                         now,
                     )
                 return None

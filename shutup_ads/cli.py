@@ -419,8 +419,8 @@ def main() -> None:
     run_parser.add_argument(
         "--sports-thresh",
         type=float,
-        default=0.10,
-        help="Sports action score threshold to return to live sports (default: 0.10)",
+        default=0.06,
+        help="Sports action score threshold to return to live sports (default: 0.06)",
     )
     run_parser.add_argument(
         "--ad-delay",
