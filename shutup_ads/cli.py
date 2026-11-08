@@ -142,53 +142,79 @@ def cmd_run(args: argparse.Namespace) -> None:
     # Ring buffer for YAMNet (0.975s = 15600 samples)
     ring_buffer = np.zeros(16000, dtype=np.float32)
 
+    headless = getattr(args, "headless", False) or not sys.stdout.isatty()
+
     try:
         with RawTerminalInput() as term_input:
-            with Live(console=console, refresh_per_second=4, screen=False) as live:
+            if headless:
+                console.print("[bold green]Running in headless/background mode...[/bold green]")
+                last_log_time = 0.0
                 for chunk in capture.start():
-                    # Handle interactive keys
                     key = term_input.get_key()
                     if key == "q":
                         break
-                    elif key == "m":
-                        # Toggle manual override
-                        if state_machine.is_commercial:
-                            ev = state_machine.force_state(BroadcastState.LIVE_SPORTS, "Manual un-attenuate key")
-                        else:
-                            ev = state_machine.force_state(BroadcastState.COMMERCIAL_BREAK, "Manual attenuate key")
-                        dashboard.log_event(f"Manual override: {ev.to_state.value}")
-                        controller.apply_commercial_state(state_machine.is_commercial)
-                    elif key == "s":
-                        ev = state_machine.force_state(BroadcastState.LIVE_SPORTS, "Force sports key")
-                        dashboard.log_event("Forced state: LIVE_SPORTS")
-                        controller.apply_commercial_state(False)
-                    elif key == "a":
-                        ev = state_machine.force_state(BroadcastState.COMMERCIAL_BREAK, "Force ad key")
-                        dashboard.log_event("Forced state: COMMERCIAL_BREAK")
-                        controller.apply_commercial_state(True)
 
-                    # Update ring buffer
                     num_new = len(chunk.samples)
                     ring_buffer = np.roll(ring_buffer, -num_new)
                     ring_buffer[-num_new:] = chunk.samples
 
-                    # Run YAMNet inference on ring buffer
                     yamnet_out = yamnet.infer(ring_buffer)
-
-                    # Evaluate basketball and ad signals
                     metrics = detector.evaluate(yamnet_out.scores, yamnet_out.embeddings, chunk.rms)
-
-                    # Update state machine
                     event = state_machine.update(metrics)
-                    if event:
-                        dashboard.log_event(f"State transition: {event.to_state.value} ({event.reason})")
 
-                    # Apply audio volume
+                    if event:
+                        console.print(f"[bold yellow]State Transition:[/bold yellow] {event.to_state.value} ({event.reason})")
+
                     active_streams = controller.apply_commercial_state(state_machine.is_commercial)
 
-                    # Render UI
-                    top_k = yamnet.get_top_k(yamnet_out.scores, k=4)
-                    live.update(dashboard.render(metrics, state_machine, active_streams, top_k))
+                    now = time.time()
+                    if now - last_log_time >= 5.0:
+                        last_log_time = now
+                        stream_summary = ", ".join(f"#{s.index} {s.app_name} ({int(s.current_volume*100)}%)" for s in active_streams)
+                        console.print(
+                            f"[dim]{time.strftime('%H:%M:%S')}[/dim] "
+                            f"State: [bold]{state_machine.current_state.value}[/bold] | "
+                            f"Ad Prob: {metrics.ad_probability*100:4.1f}% | "
+                            f"Sports: {metrics.sports_score*100:4.1f}% | "
+                            f"Streams: [{stream_summary or 'none'}]"
+                        )
+            else:
+                with Live(console=console, refresh_per_second=4, screen=False) as live:
+                    for chunk in capture.start():
+                        key = term_input.get_key()
+                        if key == "q":
+                            break
+                        elif key == "m":
+                            if state_machine.is_commercial:
+                                ev = state_machine.force_state(BroadcastState.LIVE_SPORTS, "Manual un-attenuate key")
+                            else:
+                                ev = state_machine.force_state(BroadcastState.COMMERCIAL_BREAK, "Manual attenuate key")
+                            dashboard.log_event(f"Manual override: {ev.to_state.value}")
+                            controller.apply_commercial_state(state_machine.is_commercial)
+                        elif key == "s":
+                            ev = state_machine.force_state(BroadcastState.LIVE_SPORTS, "Force sports key")
+                            dashboard.log_event("Forced state: LIVE_SPORTS")
+                            controller.apply_commercial_state(False)
+                        elif key == "a":
+                            ev = state_machine.force_state(BroadcastState.COMMERCIAL_BREAK, "Force ad key")
+                            dashboard.log_event("Forced state: COMMERCIAL_BREAK")
+                            controller.apply_commercial_state(True)
+
+                        num_new = len(chunk.samples)
+                        ring_buffer = np.roll(ring_buffer, -num_new)
+                        ring_buffer[-num_new:] = chunk.samples
+
+                        yamnet_out = yamnet.infer(ring_buffer)
+                        metrics = detector.evaluate(yamnet_out.scores, yamnet_out.embeddings, chunk.rms)
+
+                        event = state_machine.update(metrics)
+                        if event:
+                            dashboard.log_event(f"State transition: {event.to_state.value} ({event.reason})")
+
+                        active_streams = controller.apply_commercial_state(state_machine.is_commercial)
+
+                        top_k = yamnet.get_top_k(yamnet_out.scores, k=4)
+                        live.update(dashboard.render(metrics, state_machine, active_streams, top_k))
 
     except KeyboardInterrupt:
         pass
@@ -338,6 +364,11 @@ def main() -> None:
         "--dry-run",
         action="store_true",
         help="Shortcut for --mode dry_run",
+    )
+    run_parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run without interactive Rich TUI (clean line logging for daemons / background)",
     )
     run_parser.add_argument(
         "--source",
