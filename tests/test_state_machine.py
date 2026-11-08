@@ -1,6 +1,5 @@
 """Unit tests for the broadcast state machine."""
 
-import pytest
 from shutup_ads.detector.engine import DetectionMetrics
 from shutup_ads.detector.state_machine import BroadcastState, BroadcastStateMachine
 

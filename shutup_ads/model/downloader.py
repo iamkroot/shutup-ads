@@ -1,12 +1,16 @@
 """Model assets downloader and cache manager for YAMNet."""
 
-from __future__ import annotations
-
 import os
-import sys
 import urllib.request
 from pathlib import Path
-from rich.progress import Progress, BarColumn, DownloadColumn, TextColumn, TimeRemainingColumn
+
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+)
 
 YAMNET_ONNX_URL = "https://huggingface.co/zeropointnine/yamnet-onnx/resolve/main/yamnet.onnx"
 YAMNET_CLASS_MAP_URL = "https://huggingface.co/zeropointnine/yamnet-onnx/raw/main/yamnet_class_map.csv"

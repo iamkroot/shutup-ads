@@ -5,6 +5,7 @@ from __future__ import annotations
 import enum
 import time
 from dataclasses import dataclass
+
 from shutup_ads.detector.engine import DetectionMetrics
 
 

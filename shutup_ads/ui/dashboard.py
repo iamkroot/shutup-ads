@@ -1,12 +1,9 @@
 """Terminal UI dashboard built with Rich."""
 
-from __future__ import annotations
-
 import time
+
 from rich.console import Console, Group
-from rich.layout import Layout
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 from rich.text import Text
 
@@ -18,7 +15,7 @@ from shutup_ads.detector.state_machine import BroadcastState, BroadcastStateMach
 def make_meter(val: float, width: int = 20, color: str = "cyan") -> str:
     """Render a text progress meter."""
     clamped = max(0.0, min(1.0, val))
-    filled = int(round(clamped * width))
+    filled = round(clamped * width)
     bar = "█" * filled + "░" * (width - filled)
     return f"[{color}]{bar}[/{color}] {clamped*100:5.1f}%"
 

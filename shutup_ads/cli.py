@@ -1,17 +1,18 @@
 """Command line interface for shutup-ads."""
 
-from __future__ import annotations
-
 import argparse
-import logging
-import os
+import contextlib
 import select
 import sys
 import termios
 import time
 import tty
 from pathlib import Path
-from typing import Sequence
+
+if sys.version_info >= (3, 11):
+    from typing import Self
+else:
+    from typing_extensions import Self
 
 import numpy as np
 from rich.console import Console
@@ -37,21 +38,19 @@ class RawTerminalInput:
     def __init__(self) -> None:
         self.old_settings: list | None = None
 
-    def __enter__(self) -> "RawTerminalInput":
+    def __enter__(self) -> Self:
         if sys.stdin.isatty():
             try:
                 self.old_settings = termios.tcgetattr(sys.stdin)
                 tty.setcbreak(sys.stdin.fileno())
-            except Exception:
+            except (termios.error, OSError):
                 self.old_settings = None
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         if self.old_settings is not None:
-            try:
+            with contextlib.suppress(termios.error, OSError):
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
-            except Exception:
-                pass
 
     def get_key(self) -> str | None:
         """Read a single key non-blocking, or return None."""
@@ -61,7 +60,7 @@ class RawTerminalInput:
         if rlist:
             try:
                 return sys.stdin.read(1)
-            except Exception:
+            except (OSError, UnicodeDecodeError):
                 return None
         return None
 
@@ -323,14 +322,12 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         embeddings_list = []
         ring_buffer = np.zeros(16000, dtype=np.float32)
 
-        count = 0
-        for chunk in capture.start():
+        for count, chunk in enumerate(capture.start(), start=1):
             ring_buffer = np.roll(ring_buffer, -len(chunk.samples))
             ring_buffer[-len(chunk.samples):] = chunk.samples
             out = yamnet.infer(ring_buffer)
             if len(out.embeddings) > 0:
                 embeddings_list.append(np.mean(out.embeddings, axis=0))
-            count += 1
             if count >= chunks_needed:
                 break
         capture.stop()

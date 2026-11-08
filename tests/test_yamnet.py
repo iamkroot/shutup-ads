@@ -1,8 +1,9 @@
 """Unit tests for YAMNet ONNX inference wrapper."""
 
+
 import numpy as np
 import pytest
-from pathlib import Path
+
 from shutup_ads.model.yamnet import YAMNetModel, ensure_yamnet_assets
 
 

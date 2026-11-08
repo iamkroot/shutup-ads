@@ -1,6 +1,5 @@
 """Unit tests for stream matching and pulse controller."""
 
-import pytest
 from shutup_ads.audio.controller import PulseController
 
 

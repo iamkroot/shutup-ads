@@ -1,7 +1,7 @@
 """Unit tests for calibrated classifier head."""
 
 import numpy as np
-import pytest
+
 from shutup_ads.model.classifier import CalibratedClassifier
 
 

@@ -2,10 +2,11 @@
 
 import numpy as np
 import pytest
+
 from shutup_ads.detector.classes import (
     BASKETBALL_BOUNCE,
-    CROWD,
     CHEERING,
+    CROWD,
     MUSIC,
     POP_MUSIC,
     SPEECH,

@@ -6,12 +6,9 @@ import json
 import logging
 import shutil
 import subprocess
-import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from shutup_ads.detector.engine import DetectionMetrics
 from shutup_ads.detector.state_machine import StateTransitionEvent
@@ -48,30 +45,30 @@ class ScreenshotCapturer:
         if shutil.which("spectacle"):
             cmd = ["spectacle", "-b", "-n", "-o", str(dest_path)]
             try:
-                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4.0)
+                res = subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4.0)
                 if res.returncode == 0 and dest_path.exists() and dest_path.stat().st_size > 1000:
                     return True
-            except Exception as e:
+            except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("spectacle capture failed: %s", e)
 
         # 2. Try grim (wlroots Wayland)
         if shutil.which("grim"):
             cmd = ["grim", str(dest_path)]
             try:
-                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4.0)
+                res = subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4.0)
                 if res.returncode == 0 and dest_path.exists() and dest_path.stat().st_size > 1000:
                     return True
-            except Exception as e:
+            except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("grim capture failed: %s", e)
 
         # 3. Try ImageMagick import (X11)
         if shutil.which("import"):
             cmd = ["import", "-window", "root", str(dest_path)]
             try:
-                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4.0)
+                res = subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4.0)
                 if res.returncode == 0 and dest_path.exists() and dest_path.stat().st_size > 1000:
                     return True
-            except Exception as e:
+            except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("import capture failed: %s", e)
 
         # 4. Try ffmpeg x11grab fallback
@@ -83,10 +80,10 @@ class ScreenshotCapturer:
                 "-vframes", "1", "-y", str(dest_path),
             ]
             try:
-                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4.0)
+                res = subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4.0)
                 if res.returncode == 0 and dest_path.exists() and dest_path.stat().st_size > 1000:
                     return True
-            except Exception as e:
+            except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("ffmpeg capture failed: %s", e)
 
         return False
@@ -101,8 +98,8 @@ class ScreenshotCapturer:
             return
 
         ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        ad_pct = int(round(metrics.ad_probability * 100))
-        sport_pct = int(round(metrics.sports_score * 100))
+        ad_pct = round(metrics.ad_probability * 100)
+        sport_pct = round(metrics.sports_score * 100)
         filename = f"{ts_str}_{event.from_state.value}_to_{event.to_state.value}_ad{ad_pct}_sports{sport_pct}.png"
         dest_path = self.output_dir / filename
 

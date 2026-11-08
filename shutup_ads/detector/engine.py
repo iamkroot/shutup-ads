@@ -3,20 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
 
 from shutup_ads.detector.classes import (
     ARENA_ATMOSPHERE_CLASSES,
     BASKETBALL_BOUNCE,
-    BASKETBALL_COURT_CLASSES,
     BUZZER,
-    CHEERING,
     COMMERCIAL_FOLEY_CLASSES,
     COMMERCIAL_MUSIC_CLASSES,
-    CROWD,
-    MUSIC,
     NARRATION,
     SILENCE,
     SPEECH,

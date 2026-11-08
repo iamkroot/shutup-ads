@@ -1,6 +1,7 @@
 """Unit tests for screenshot capturer."""
 
 from pathlib import Path
+
 from shutup_ads.debug.capturer import ScreenshotCapturer
 from shutup_ads.detector.engine import DetectionMetrics
 from shutup_ads.detector.state_machine import BroadcastState, StateTransitionEvent

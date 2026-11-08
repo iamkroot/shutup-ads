@@ -1,16 +1,14 @@
 """Calibrated transfer learning classifier head on top of YAMNet embeddings."""
 
-from __future__ import annotations
-
-import os
+import pickle
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 import joblib
 import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 
 def get_default_model_path() -> Path:
@@ -32,7 +30,7 @@ class CalibratedClassifier:
         if self.model_path.exists():
             try:
                 self.pipeline = joblib.load(self.model_path)
-            except Exception:
+            except (OSError, pickle.UnpicklingError, EOFError, ValueError, KeyError, AttributeError):
                 self.pipeline = None
 
     @property

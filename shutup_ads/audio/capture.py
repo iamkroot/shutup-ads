@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator
 
 import numpy as np
 
@@ -82,7 +82,7 @@ class PulseAudioCapture:
             try:
                 self.process.terminate()
                 self.process.wait(timeout=1.0)
-            except Exception:
+            except (subprocess.SubprocessError, OSError):
                 self.process.kill()
             self.process = None
 
@@ -158,6 +158,6 @@ class FileAudioCapture:
             try:
                 self.process.terminate()
                 self.process.wait(timeout=1.0)
-            except Exception:
+            except (subprocess.SubprocessError, OSError):
                 self.process.kill()
             self.process = None
