@@ -20,6 +20,7 @@ from rich.table import Table
 
 from shutup_ads.audio.capture import FileAudioCapture, PulseAudioCapture
 from shutup_ads.audio.controller import DEFAULT_TARGET_APPS, PulseController
+from shutup_ads.debug.capturer import ScreenshotCapturer
 from shutup_ads.detector.engine import BasketballDetector
 from shutup_ads.detector.state_machine import BroadcastState, BroadcastStateMachine
 from shutup_ads.model.classifier import CalibratedClassifier
@@ -136,8 +137,14 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     dashboard = Dashboard(action_mode=action_mode, target_vol_pct=target_vol)
 
+    debug_enabled = getattr(args, "debug", False) or getattr(args, "debug_screenshots", False)
+    debug_dir = getattr(args, "debug_dir", "debug_captures")
+    capturer = ScreenshotCapturer(output_dir=debug_dir, enabled=debug_enabled)
+
     console.print(f"[bold green]Starting shutup-ads on monitor:[/bold green] [cyan]{monitor_source}[/cyan]")
     console.print(f"[bold]Target apps:[/bold] {', '.join(target_apps)} | [bold]Mode:[/bold] {action_mode}")
+    if debug_enabled:
+        console.print(f"[bold magenta]Debug screenshot mode ENABLED[/bold magenta] (captures -> [cyan]{debug_dir}[/cyan])")
 
     # Ring buffer for YAMNet (0.975s = 15600 samples)
     ring_buffer = np.zeros(16000, dtype=np.float32)
@@ -164,6 +171,7 @@ def cmd_run(args: argparse.Namespace) -> None:
 
                     if event:
                         console.print(f"[bold yellow]State Transition:[/bold yellow] {event.to_state.value} ({event.reason})")
+                        capturer.capture_transition(event, metrics)
 
                     active_streams = controller.apply_commercial_state(state_machine.is_commercial)
 
@@ -185,6 +193,9 @@ def cmd_run(args: argparse.Namespace) -> None:
                         key = term_input.get_key()
                         if key == "q":
                             break
+                        elif key == "c":
+                            capturer.capture_manual("manual_check")
+                            dashboard.log_event("Captured manual screenshot")
                         elif key == "m":
                             if state_machine.is_commercial:
                                 ev = state_machine.force_state(BroadcastState.LIVE_SPORTS, "Manual un-attenuate key")
@@ -211,6 +222,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                         event = state_machine.update(metrics)
                         if event:
                             dashboard.log_event(f"State transition: {event.to_state.value} ({event.reason})")
+                            capturer.capture_transition(event, metrics)
 
                         active_streams = controller.apply_commercial_state(state_machine.is_commercial)
 
@@ -222,6 +234,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     finally:
         capture.stop()
         controller.cleanup()
+        capturer.shutdown()
         console.print("\n[bold green]shutup-ads stopped cleanly. Audio streams restored.[/bold green]\n")
 
 
@@ -370,6 +383,22 @@ def main() -> None:
         "--headless",
         action="store_true",
         help="Run without interactive Rich TUI (clean line logging for daemons / background)",
+    )
+    run_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode (captures screenshots on every state transition)",
+    )
+    run_parser.add_argument(
+        "--debug-screenshots",
+        action="store_true",
+        help="Capture desktop screenshot whenever state transitions between sports and commercial",
+    )
+    run_parser.add_argument(
+        "--debug-dir",
+        type=str,
+        default="debug_captures",
+        help="Directory to save debug transition screenshots and metadata (default: debug_captures)",
     )
     run_parser.add_argument(
         "--source",

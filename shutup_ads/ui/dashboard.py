@@ -134,7 +134,7 @@ class Dashboard:
 
         # 7. Hotkeys Footer
         footer = Text(
-            "[m] Toggle Attenuation  │  [s] Force Sports  │  [a] Force Commercial  │  [q] Quit",
+            "[c] Screenshot  │  [m] Toggle Attenuation  │  [s] Force Sports  │  [a] Force Commercial  │  [q] Quit",
             style="dim italic",
             justify="center",
         )
