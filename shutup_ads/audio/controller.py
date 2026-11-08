@@ -1,10 +1,12 @@
-"""PulseAudio / PipeWire stream discovery, volume attenuation, and muting."""
+"""PulseAudio / PipeWire stream discovery, virtual bridge routing, and volume attenuation."""
 
 from __future__ import annotations
 
 import atexit
 import logging
 import signal
+import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -28,29 +30,52 @@ class StreamInfo:
 
 
 class PulseController:
-    """Manages volume attenuation and muting for target application streams."""
+    """Manages virtual audio bridge routing and volume attenuation.
+
+    Uses a virtual null-sink + loopback architecture:
+    1. Target applications (Firefox / Sunshine) output into a virtual null sink ('shutup_ads_bridge').
+    2. A loopback routes sound from 'shutup_ads_bridge.monitor' to the user's physical speakers.
+    3. YAMNet captures directly from 'shutup_ads_bridge.monitor', which ALWAYS has the 100% original,
+       unattenuated broadcast audio.
+    4. When commercial breaks trigger, shutup-ads attenuates or mutes ONLY the loopback stream to
+       the user's speakers, leaving the audio analysis completely unmuted and unaffected.
+    5. When shutup-ads exits, streams are seamlessly moved back to the physical speakers and
+       virtual modules are unloaded.
+    """
 
     def __init__(
         self,
         target_apps: Sequence[str] = DEFAULT_TARGET_APPS,
         attenuate_volume: float = 0.15,
         action_mode: str = "attenuate",  # "attenuate", "mute", or "dry_run"
+        use_bridge: bool = True,
     ):
         self.target_apps = [app.lower().strip() for app in target_apps]
         self.attenuate_volume = float(attenuate_volume)
         self.action_mode = action_mode
+        self.use_bridge = use_bridge
+
         self._pulse: pulsectl.Pulse | None = None
         self._tracked_streams: dict[int, StreamInfo] = {}
+
+        self.default_sink_name: str = ""
+        self._bridge_null_mod: str | None = None
+        self._bridge_loop_mod: str | None = None
+        self._loopback_si_id: int | None = None
+        self._is_attenuated: bool = False
 
         # Register cleanup on program exit
         atexit.register(self.cleanup)
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
 
+        if self.use_bridge and self.action_mode != "dry_run":
+            self.setup_bridge()
+
     def _get_pulse(self) -> pulsectl.Pulse:
         """Get or initialize pulsectl client connection."""
         if self._pulse is None:
-            self._pulse = pulsectl.Pulse("shutup-ads-controller")
+            self._pulse = pulsectl.Pulse("shutup-ads-ctrl")
         return self._pulse
 
     def _matches_target(self, app_name: str, binary: str) -> bool:
@@ -64,8 +89,57 @@ class PulseController:
                 return True
         return False
 
-    def scan_streams(self) -> list[StreamInfo]:
-        """Scan active sink inputs and return matching target streams."""
+    def setup_bridge(self) -> None:
+        """Create virtual null sink and loopback for clean unattenuated audio capture."""
+        try:
+            pulse = self._get_pulse()
+            server_info = pulse.server_info()
+            self.default_sink_name = server_info.default_sink_name
+        except Exception as e:
+            logger.warning("Failed to query default sink via pulsectl: %s", e)
+            self.default_sink_name = "alsa_output.pci-0000_63_00.6.pro-output-0"
+
+        logger.info("Setting up Virtual Audio Bridge with output to: %s", self.default_sink_name)
+
+        # 1. Load null sink
+        r1 = subprocess.run(
+            ["pactl", "load-module", "module-null-sink", "sink_name=shutup_ads_bridge", "sink_properties=device.description=ShutupAdsBridge"],
+            capture_output=True, text=True,
+        )
+        if r1.returncode == 0 and r1.stdout.strip().isdigit():
+            self._bridge_null_mod = r1.stdout.strip()
+        else:
+            logger.warning("Could not load module-null-sink: %s", r1.stderr)
+
+        # 2. Load loopback to default physical speakers
+        r2 = subprocess.run(
+            ["pactl", "load-module", "module-loopback", "source=shutup_ads_bridge.monitor", f"sink={self.default_sink_name}"],
+            capture_output=True, text=True,
+        )
+        if r2.returncode == 0 and r2.stdout.strip().isdigit():
+            self._bridge_loop_mod = r2.stdout.strip()
+        else:
+            logger.warning("Could not load module-loopback: %s", r2.stderr)
+
+        # 3. Route target streams to bridge
+        self.scan_and_route_streams()
+
+    def get_monitor_source(self) -> str:
+        """Resolve the monitor source name for audio analysis."""
+        if self.use_bridge and self._bridge_null_mod:
+            return "shutup_ads_bridge.monitor"
+
+        try:
+            pulse = self._get_pulse()
+            server_info = pulse.server_info()
+            default_sink = pulse.get_sink_by_name(server_info.default_sink_name)
+            return default_sink.monitor_source_name
+        except Exception as e:
+            logger.warning("Could not query default sink monitor: %s, falling back to default.monitor", e)
+            return "default.monitor"
+
+    def scan_and_route_streams(self) -> list[StreamInfo]:
+        """Scan active sink inputs, route targets into the bridge, and return stream list."""
         matched: list[StreamInfo] = []
         try:
             pulse = self._get_pulse()
@@ -73,31 +147,92 @@ class PulseController:
             for si in sink_inputs:
                 app_name = si.proplist.get("application.name", "")
                 binary = si.proplist.get("application.process.binary", "")
+
+                # Skip our own loopback stream
+                if "shutup_ads" in app_name.lower() or "loopback" in si.proplist.get("media.name", "").lower():
+                    continue
+
                 if self._matches_target(app_name, binary):
                     vol = float(si.volume.value_flat)
                     if si.index not in self._tracked_streams:
-                        # Record stream with its baseline volume
                         stream_info = StreamInfo(
                             index=si.index,
                             app_name=app_name,
                             binary=binary,
                             baseline_volume=vol if vol > 0.05 else 1.0,
                             current_volume=vol,
-                            is_attenuated=False,
+                            is_attenuated=self._is_attenuated,
                             is_muted=bool(si.mute),
                         )
                         self._tracked_streams[si.index] = stream_info
+
+                        # Move target to shutup_ads_bridge if bridge is active
+                        if self.use_bridge and self._bridge_null_mod:
+                            subprocess.run(["pactl", "move-sink-input", str(si.index), "shutup_ads_bridge"], capture_output=True)
+                            # Ensure full volume into bridge
+                            subprocess.run(["pactl", "set-sink-input-volume", str(si.index), "100%"], capture_output=True)
+                            subprocess.run(["pactl", "set-sink-input-mute", str(si.index), "0"], capture_output=True)
                     else:
                         stream_info = self._tracked_streams[si.index]
-                        stream_info.current_volume = vol
+                        stream_info.is_attenuated = self._is_attenuated
                     matched.append(stream_info)
         except Exception as e:
-            logger.warning("Error scanning sink inputs: %s", e)
-            self._pulse = None
+            logger.debug("Error scanning sink inputs: %s", e)
+
         return matched
 
+    def _find_loopback_sink_input_id(self) -> int | None:
+        """Find the sink-input ID of the loopback routing audio to user speakers."""
+        if not self._bridge_loop_mod:
+            return None
+
+        try:
+            res = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True).stdout
+            for block in res.split("Sink Input #")[1:]:
+                lines = block.splitlines()
+                si_id = int(lines[0].strip())
+                if f"pulse.module.id = \"{self._bridge_loop_mod}\"" in block or "loopback" in block.lower():
+                    self._loopback_si_id = si_id
+                    return si_id
+        except Exception:
+            pass
+        return self._loopback_si_id
+
+    def apply_commercial_state(self, is_commercial: bool) -> list[StreamInfo]:
+        """Apply volume attenuation to loopback speakers (or target streams in direct mode)."""
+        if self.action_mode == "dry_run":
+            return self.scan_and_route_streams()
+
+        active_targets = self.scan_and_route_streams()
+
+        if self.use_bridge and self._bridge_loop_mod:
+            loop_id = self._find_loopback_sink_input_id()
+            if loop_id is not None:
+                if is_commercial:
+                    if not self._is_attenuated:
+                        logger.info("Commercial detected -> Attenuating speaker loopback #%d to %.0f%%",
+                                    loop_id, self.attenuate_volume * 100)
+                        if self.action_mode == "mute":
+                            subprocess.run(["pactl", "set-sink-input-mute", str(loop_id), "1"], capture_output=True)
+                        else:
+                            vol_pct = f"{int(round(self.attenuate_volume * 100))}%"
+                            subprocess.run(["pactl", "set-sink-input-volume", str(loop_id), vol_pct], capture_output=True)
+                        self._is_attenuated = True
+                else:
+                    if self._is_attenuated:
+                        logger.info("Live sports detected -> Restoring speaker loopback #%d to 100%%", loop_id)
+                        subprocess.run(["pactl", "set-sink-input-mute", str(loop_id), "0"], capture_output=True)
+                        subprocess.run(["pactl", "set-sink-input-volume", str(loop_id), "100%"], capture_output=True)
+                        self._is_attenuated = False
+
+            for s in active_targets:
+                s.is_attenuated = self._is_attenuated
+                s.current_volume = self.attenuate_volume if self._is_attenuated else s.baseline_volume
+
+        return active_targets
+
     def list_all_streams(self) -> list[dict[str, Any]]:
-        """List all active sink inputs on the system (for cli list-devices)."""
+        """List all active sink inputs on the system."""
         result = []
         try:
             pulse = self._get_pulse()
@@ -119,85 +254,34 @@ class PulseController:
                 })
         except Exception as e:
             logger.error("Failed to list streams: %s", e)
-            self._pulse = None
         return result
 
-    def get_monitor_source(self) -> str:
-        """Resolve the monitor source name for the default audio sink."""
-        try:
-            pulse = self._get_pulse()
-            server_info = pulse.server_info()
-            default_sink = pulse.get_sink_by_name(server_info.default_sink_name)
-            return default_sink.monitor_source_name
-        except Exception as e:
-            logger.warning("Could not query default sink monitor: %s, falling back to default.monitor", e)
-            return "default.monitor"
-
-    def _set_stream_volume(self, stream_idx: int, target_vol: float, mute: bool = False) -> None:
-        """Set volume on a sink input using pulsectl with pactl CLI fallback."""
-        success = False
-        try:
-            pulse = self._get_pulse()
-            si = pulse.sink_input_info(stream_idx)
-            pulse.volume_set_all_chans(si, target_vol)
-            pulse.sink_input_volume_set(si.index, si.volume)
-            if mute:
-                pulse.sink_input_mute(stream_idx, 1)
-            else:
-                pulse.sink_input_mute(stream_idx, 0)
-            success = True
-        except Exception as e:
-            logger.debug("pulsectl volume set failed on #%d (%s), trying pactl fallback", stream_idx, e)
-
-        if not success:
-            try:
-                import subprocess
-                vol_pct = f"{int(round(target_vol * 100))}%"
-                subprocess.run(["pactl", "set-sink-input-volume", str(stream_idx), vol_pct], check=True)
-                mute_arg = "1" if mute else "0"
-                subprocess.run(["pactl", "set-sink-input-mute", str(stream_idx), mute_arg], check=True)
-            except Exception as e:
-                logger.warning("Failed to set volume on #%d via pactl fallback: %s", stream_idx, e)
-
-    def apply_commercial_state(self, is_commercial: bool) -> list[StreamInfo]:
-        """Apply attenuation/muting if in commercial, or restore volume if live sports.
-
-        Returns list of modified streams.
-        """
-        if self.action_mode == "dry_run":
-            return self.scan_streams()
-
-        active_targets = self.scan_streams()
-        for stream in active_targets:
-            if is_commercial:
-                if not stream.is_attenuated:
-                    logger.info("Commercial detected -> Attenuating %s (#%d)", stream.app_name, stream.index)
-                    if self.action_mode == "mute":
-                        self._set_stream_volume(stream.index, 0.0, mute=True)
-                        stream.is_muted = True
-                    else:
-                        target_vol = min(stream.baseline_volume, self.attenuate_volume)
-                        self._set_stream_volume(stream.index, target_vol, mute=False)
-                        stream.current_volume = target_vol
-                    stream.is_attenuated = True
-            else:
-                if stream.is_attenuated:
-                    logger.info("Live sports detected -> Restoring %s (#%d) volume to %.0f%%",
-                                stream.app_name, stream.index, stream.baseline_volume * 100)
-                    self._set_stream_volume(stream.index, stream.baseline_volume, mute=False)
-                    stream.is_muted = False
-                    stream.current_volume = stream.baseline_volume
-                    stream.is_attenuated = False
-
-        return active_targets
-
     def cleanup(self) -> None:
-        """Restore all streams to baseline volume before exit."""
-        if not self._tracked_streams:
-            return
-        logger.info("Restoring all streams to baseline volumes on exit...")
-        for idx, stream in list(self._tracked_streams.items()):
-            self._set_stream_volume(idx, stream.baseline_volume, mute=False)
+        """Restore all streams to default sink and unload virtual bridge modules."""
+        logger.info("Restoring audio streams and unloading virtual bridge...")
+        # 1. Un-mute / restore loopback if present
+        if self._loopback_si_id:
+            subprocess.run(["pactl", "set-sink-input-mute", str(self._loopback_si_id), "0"], capture_output=True)
+            subprocess.run(["pactl", "set-sink-input-volume", str(self._loopback_si_id), "100%"], capture_output=True)
+
+        # 2. Move tracked streams back to default physical sink
+        target_sink = self.default_sink_name or "alsa_output.pci-0000_63_00.6.pro-output-0"
+        for idx in list(self._tracked_streams.keys()):
+            try:
+                subprocess.run(["pactl", "move-sink-input", str(idx), target_sink], capture_output=True)
+                subprocess.run(["pactl", "set-sink-input-volume", str(idx), "100%"], capture_output=True)
+                subprocess.run(["pactl", "set-sink-input-mute", str(idx), "0"], capture_output=True)
+            except Exception:
+                pass
+
+        # 3. Unload modules
+        if self._bridge_loop_mod:
+            subprocess.run(["pactl", "unload-module", self._bridge_loop_mod], capture_output=True)
+            self._bridge_loop_mod = None
+        if self._bridge_null_mod:
+            subprocess.run(["pactl", "unload-module", self._bridge_null_mod], capture_output=True)
+            self._bridge_null_mod = None
+
         if self._pulse:
             try:
                 self._pulse.close()
