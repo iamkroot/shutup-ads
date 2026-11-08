@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from shutup_ads.detector.classes import (
     ARENA_ATMOSPHERE_CLASSES,
     BASKETBALL_BOUNCE,
+    BASKETBALL_COURT_CLASSES,
     BUZZER,
     COMMERCIAL_FOLEY_CLASSES,
     COMMERCIAL_MUSIC_CLASSES,
@@ -19,6 +22,9 @@ from shutup_ads.detector.classes import (
     WHISTLE,
 )
 from shutup_ads.model.classifier import CalibratedClassifier
+
+if TYPE_CHECKING:
+    from shutup_ads.config import PresetConfig
 
 
 @dataclass
@@ -49,12 +55,40 @@ class BasketballDetector:
         alpha_attack: float = 0.35,   # Fast attack when ad evidence increases
         alpha_release: float = 0.10,  # Slow release to maintain confidence across dialogue gaps
         ema_alpha: float | None = None, # Backwards compatibility
+        court_classes: Sequence[int] | None = None,
+        crowd_classes: Sequence[int] | None = None,
+        music_classes: Sequence[int] | None = None,
+        foley_classes: Sequence[int] | None = None,
+        preset: PresetConfig | None = None,
     ):
+        if preset is not None:
+            if ad_threshold == 0.40:
+                ad_threshold = preset.ad_thresh
+            if sports_threshold == 0.18:
+                sports_threshold = preset.sports_thresh
+            if alpha_attack == 0.35:
+                alpha_attack = preset.alpha_attack
+            if alpha_release == 0.10:
+                alpha_release = preset.alpha_release
+            if court_classes is None:
+                court_classes = preset.court_classes
+            if crowd_classes is None:
+                crowd_classes = preset.crowd_classes
+            if music_classes is None:
+                music_classes = preset.music_classes
+            if foley_classes is None:
+                foley_classes = preset.foley_classes
+
         self.classifier = classifier
         self.ad_threshold = ad_threshold
         self.sports_threshold = sports_threshold
         self.alpha_attack = ema_alpha if ema_alpha is not None else alpha_attack
         self.alpha_release = ema_alpha if ema_alpha is not None else alpha_release
+
+        self.court_classes = list(court_classes) if court_classes is not None else list(BASKETBALL_COURT_CLASSES)
+        self.crowd_classes = list(crowd_classes) if crowd_classes is not None else list(ARENA_ATMOSPHERE_CLASSES)
+        self.music_classes = list(music_classes) if music_classes is not None else list(COMMERCIAL_MUSIC_CLASSES)
+        self.foley_classes = list(foley_classes) if foley_classes is not None else list(COMMERCIAL_FOLEY_CLASSES)
 
         self._smoothed_ad_prob: float = 0.0
         self._smoothed_sports_score: float | None = None
@@ -91,16 +125,21 @@ class BasketballDetector:
         frame_mean = np.mean(scores, axis=0)
 
         # Sports Indicators:
-        # Court action: bounce, squeak, whistle, buzzer
-        bounce = float(frame_mean[BASKETBALL_BOUNCE])
-        squeak = float(frame_mean[SQUEAK])
-        whistle = float(frame_mean[WHISTLE])
-        buzzer = float(frame_mean[BUZZER])
-        court_action = max(bounce * 1.5, squeak * 1.2, whistle * 1.8, buzzer * 1.5)
+        # Court action: bounce, squeak, whistle, buzzer + generic court classes
+        bounce = float(frame_mean[BASKETBALL_BOUNCE]) if BASKETBALL_BOUNCE in self.court_classes else 0.0
+        squeak = float(frame_mean[SQUEAK]) if SQUEAK in self.court_classes else 0.0
+        whistle = float(frame_mean[WHISTLE]) if WHISTLE in self.court_classes else 0.0
+        buzzer = float(frame_mean[BUZZER]) if BUZZER in self.court_classes else 0.0
+        specific_action = max(bounce * 1.5, squeak * 1.2, whistle * 1.8, buzzer * 1.5)
+        generic_action = float(np.max(frame_mean[self.court_classes])) if self.court_classes else 0.0
+        court_action = max(specific_action, generic_action)
 
         # Arena atmosphere (crowd, cheer, applause, chant, stadium organ)
-        arena_sub = frame_mean[ARENA_ATMOSPHERE_CLASSES]
-        crowd_cheer = float(np.max(arena_sub))
+        if self.crowd_classes:
+            arena_sub = frame_mean[self.crowd_classes]
+            crowd_cheer = float(np.max(arena_sub))
+        else:
+            crowd_cheer = 0.0
 
         # Sports score is strictly court action and arena crowd/organ sounds.
         # Human speech is excluded so voice timbre in commercials never triggers sports.
@@ -110,14 +149,17 @@ class BasketballDetector:
         ))
 
         # 2. Commercial Indicators:
-        music_sub = frame_mean[COMMERCIAL_MUSIC_CLASSES]
-        music_score = float(np.max(music_sub))
+        if self.music_classes:
+            music_sub = frame_mean[self.music_classes]
+            music_score = float(np.max(music_sub))
+        else:
+            music_score = 0.0
 
         speech = float(frame_mean[SPEECH])
         narration = float(frame_mean[NARRATION])
         speech_score = max(speech, narration)
 
-        foley_sub = float(np.max(frame_mean[COMMERCIAL_FOLEY_CLASSES])) if COMMERCIAL_FOLEY_CLASSES else 0.0
+        foley_sub = float(np.max(frame_mean[self.foley_classes])) if self.foley_classes else 0.0
         ad_speech = max(narration, 0.5 * speech, foley_sub)
 
         # Soft continuous music signal: in live gameplay music was never > 0.045
@@ -177,3 +219,7 @@ class BasketballDetector:
             is_cut_candidate=is_cut,
             embedding_ad_prob=embedding_ad_prob,
         )
+
+
+SportsDetector = BasketballDetector
+

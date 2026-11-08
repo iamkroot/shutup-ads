@@ -23,10 +23,16 @@ def make_meter(val: float, width: int = 20, color: str = "cyan") -> str:
 class Dashboard:
     """Rich interactive dashboard for shutup-ads."""
 
-    def __init__(self, action_mode: str = "attenuate", target_vol_pct: float = 0.15):
+    def __init__(
+        self,
+        action_mode: str = "attenuate",
+        target_vol_pct: float = 0.15,
+        preset_name: str = "Basketball",
+    ):
         self.console = Console()
         self.action_mode = action_mode
         self.target_vol_pct = target_vol_pct
+        self.preset_name = preset_name
         self.recent_events: list[str] = []
 
     def log_event(self, msg: str) -> None:
@@ -48,15 +54,18 @@ class Dashboard:
         state = state_machine.current_state
         duration = state_machine.time_in_current_state
 
+        preset_upper = self.preset_name.upper()
+        icon = "🏀" if "basket" in self.preset_name.lower() else "🏟️"
+
         if state == BroadcastState.LIVE_SPORTS:
-            state_text = Text(f" 🏀  LIVE BASKETBALL  [{duration:.1f}s] ", style="bold white on green", justify="center")
+            state_text = Text(f" {icon}  LIVE {preset_upper}  [{duration:.1f}s] ", style="bold white on green", justify="center")
         elif state == BroadcastState.PENDING_COMMERCIAL:
             state_text = Text(f" ⏳  DETECTING COMMERCIAL BREAK...  [{duration:.1f}s] ", style="bold black on yellow", justify="center")
         elif state == BroadcastState.COMMERCIAL_BREAK:
             label = "MUTED" if self.action_mode == "mute" else f"ATTENUATED ({int(self.target_vol_pct*100)}%)"
             state_text = Text(f" 🔇  COMMERCIAL BREAK - {label}  [{duration:.1f}s] ", style="bold white on red", justify="center")
         elif state == BroadcastState.PENDING_SPORTS:
-            state_text = Text(f" ⏳  RESUMING BASKETBALL...  [{duration:.1f}s] ", style="bold white on dark_green", justify="center")
+            state_text = Text(f" ⏳  RESUMING {preset_upper}...  [{duration:.1f}s] ", style="bold white on dark_green", justify="center")
         else:
             state_text = Text(f" {state.value} ", style="bold", justify="center")
 
@@ -78,11 +87,12 @@ class Dashboard:
         left_table.add_row("Audio RMS Energy", make_meter(min(1.0, metrics.rms_energy * 5.0), 18, "yellow"))
 
         # Right Column: Basketball & Commercial Features
-        right_table = Table(title="Acoustic Components", box=None, padding=(0, 1), expand=True)
+        right_table = Table(title=f"{self.preset_name} Acoustic Profile", box=None, padding=(0, 1), expand=True)
         right_table.add_column("Feature", style="bold")
         right_table.add_column("Level", justify="right")
 
-        right_table.add_row("🏀 Court Action (Bounce/Squeak/Whistle)", make_meter(metrics.court_score, 16, "cyan"))
+        court_label = f"{icon} Court Action (Bounce/Squeak/Whistle)" if "basket" in self.preset_name.lower() else f"{icon} Game / Match Action"
+        right_table.add_row(court_label, make_meter(metrics.court_score, 16, "cyan"))
         right_table.add_row("📣 Crowd & Cheering", make_meter(metrics.crowd_score, 16, "blue"))
         right_table.add_row("🎵 Studio Music / Jingles", make_meter(metrics.music_score, 16, "magenta"))
         right_table.add_row("🗣️ Clean Studio Voiceover", make_meter(metrics.clean_speech_score, 16, "bright_black"))

@@ -5,8 +5,12 @@ from __future__ import annotations
 import enum
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from shutup_ads.detector.engine import DetectionMetrics
+
+if TYPE_CHECKING:
+    from shutup_ads.config import PresetConfig
 
 
 class BroadcastState(enum.Enum):
@@ -36,7 +40,22 @@ class BroadcastStateMachine:
         sports_trigger_seconds: float = 1.0, # Fast 1.0s response when game returns
         min_ad_duration: float = 15.0,       # Minimum ad duration guard
         max_ad_duration: float = 270.0,      # 4.5m failsafe auto-unmute
+        preset: PresetConfig | None = None,
     ):
+        if preset is not None:
+            if ad_threshold == 0.40:
+                ad_threshold = preset.ad_thresh
+            if sports_threshold == 0.06:
+                sports_threshold = preset.sports_thresh
+            if ad_trigger_seconds == 3.5:
+                ad_trigger_seconds = preset.ad_delay
+            if sports_trigger_seconds == 1.0:
+                sports_trigger_seconds = preset.sports_delay
+            if min_ad_duration == 15.0:
+                min_ad_duration = preset.min_ad_duration
+            if max_ad_duration == 270.0:
+                max_ad_duration = preset.max_ad_duration
+
         self.ad_threshold = ad_threshold
         self.sports_threshold = sports_threshold
         self.ad_trigger_seconds = ad_trigger_seconds

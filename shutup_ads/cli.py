@@ -21,6 +21,7 @@ from rich.table import Table
 
 from shutup_ads.audio.capture import FileAudioCapture, PulseAudioCapture
 from shutup_ads.audio.controller import DEFAULT_TARGET_APPS, PulseController
+from shutup_ads.config import get_preset, load_config
 from shutup_ads.debug.capturer import ScreenshotCapturer
 from shutup_ads.detector.engine import BasketballDetector
 from shutup_ads.detector.state_machine import BroadcastState, BroadcastStateMachine
@@ -67,7 +68,14 @@ class RawTerminalInput:
 
 def cmd_list_devices(args: argparse.Namespace) -> None:
     """List active PulseAudio / PipeWire streams and audio sinks."""
-    controller = PulseController()
+    config = load_config(args.config)
+    default_sink = getattr(args, "default_sink", None) or config.audio.default_sink
+    fallback_sink = getattr(args, "fallback_sink", None) or config.audio.fallback_sink
+    controller = PulseController(
+        default_sink=default_sink,
+        fallback_sink=fallback_sink,
+        use_bridge=False,
+    )
     streams = controller.list_all_streams()
     monitor = controller.get_monitor_source()
 
@@ -100,12 +108,62 @@ def cmd_list_devices(args: argparse.Namespace) -> None:
     console.print()
 
 
+def cmd_list_presets(args: argparse.Namespace) -> None:
+    """List available presets and their detection parameters."""
+    config = load_config(args.config)
+    table = Table(title="Available Sport & Broadcast Presets")
+    table.add_column("Key", style="bold cyan")
+    table.add_column("Name", style="bold")
+    table.add_column("Description")
+    table.add_column("Ad Thresh", justify="right")
+    table.add_column("Sports Thresh", justify="right")
+    table.add_column("Ad Delay", justify="right")
+    table.add_column("Sports Delay", justify="right")
+    table.add_column("Active?", justify="center")
+
+    active_key = (getattr(args, "preset", None) or config.preset).lower().strip()
+    for key, p in config.presets.items():
+        is_active = "[bold green]YES (Active)[/bold green]" if key.lower() == active_key else "[dim]No[/dim]"
+        table.add_row(
+            key,
+            p.name,
+            p.description,
+            f"{p.ad_thresh:.2f}",
+            f"{p.sports_thresh:.2f}",
+            f"{p.ad_delay:.1f}s",
+            f"{p.sports_delay:.1f}s",
+            is_active,
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     """Run real-time sports audio monitoring and stream attenuation."""
-    action_mode = "dry_run" if args.dry_run else args.mode
-    target_vol = args.ad_volume / 100.0
+    config = load_config(args.config)
+    preset_name = getattr(args, "preset", None) or config.preset
+    preset = get_preset(config, preset_name)
 
-    target_apps = [a.strip() for a in args.app.split(",") if a.strip()]
+    action_mode = "dry_run" if args.dry_run else (args.mode if args.mode is not None else config.audio.action_mode)
+    target_vol_val = args.ad_volume if args.ad_volume is not None else config.audio.ad_volume
+    target_vol = target_vol_val / 100.0
+
+    if getattr(args, "app", None) is not None:
+        target_apps = [a.strip() for a in args.app.split(",") if a.strip()]
+    else:
+        target_apps = config.audio.target_apps
+
+    ad_thresh = args.ad_thresh if args.ad_thresh is not None else preset.ad_thresh
+    sports_thresh = args.sports_thresh if args.sports_thresh is not None else preset.sports_thresh
+    ad_delay = args.ad_delay if args.ad_delay is not None else preset.ad_delay
+    sports_delay = args.sports_delay if args.sports_delay is not None else preset.sports_delay
+
+    default_sink = getattr(args, "default_sink", None) or config.audio.default_sink
+    fallback_sink = getattr(args, "fallback_sink", None) or config.audio.fallback_sink
+    use_bridge = config.audio.use_bridge
+    bridge_sink_name = config.audio.bridge_sink_name
 
     console.print("[dim]Checking YAMNet model assets...[/dim]")
     model_path, class_map = ensure_yamnet_assets()
@@ -116,33 +174,47 @@ def cmd_run(args: argparse.Namespace) -> None:
     classifier = CalibratedClassifier()
     detector = BasketballDetector(
         classifier=classifier,
-        ad_threshold=args.ad_thresh,
-        sports_threshold=args.sports_thresh,
+        ad_threshold=ad_thresh,
+        sports_threshold=sports_thresh,
+        preset=preset,
     )
     state_machine = BroadcastStateMachine(
-        ad_threshold=args.ad_thresh,
-        sports_threshold=args.sports_thresh,
-        ad_trigger_seconds=args.ad_delay,
-        sports_trigger_seconds=args.sports_delay,
+        ad_threshold=ad_thresh,
+        sports_threshold=sports_thresh,
+        ad_trigger_seconds=ad_delay,
+        sports_trigger_seconds=sports_delay,
+        min_ad_duration=preset.min_ad_duration,
+        max_ad_duration=preset.max_ad_duration,
+        preset=preset,
     )
     controller = PulseController(
         target_apps=target_apps,
         attenuate_volume=target_vol,
         action_mode=action_mode,
+        use_bridge=use_bridge,
+        default_sink=default_sink,
+        fallback_sink=fallback_sink,
+        bridge_sink_name=bridge_sink_name,
     )
 
-    monitor_source = args.source or controller.get_monitor_source()
+    monitor_source = args.source or config.audio.source or controller.get_monitor_source()
     capture = PulseAudioCapture(source=monitor_source, chunk_seconds=0.5)
 
-    dashboard = Dashboard(action_mode=action_mode, target_vol_pct=target_vol)
+    dashboard = Dashboard(action_mode=action_mode, target_vol_pct=target_vol, preset_name=preset.name)
 
-    debug_enabled = getattr(args, "debug", False) or getattr(args, "debug_screenshots", False)
-    debug_dir = getattr(args, "debug_dir", "debug_captures")
+    debug_enabled = (
+        getattr(args, "debug", False)
+        or getattr(args, "debug_screenshots", False)
+        or config.debug
+    )
+    debug_dir = getattr(args, "debug_dir", None) or config.debug_dir
     capturer = ScreenshotCapturer(output_dir=debug_dir, enabled=debug_enabled)
 
     console.print(f"[bold green]Starting shutup-ads on monitor:[/bold green] [cyan]{monitor_source}[/cyan]")
-    console.print(f"[bold]Target apps:[/bold] {', '.join(target_apps)} | [bold]Mode:[/bold] {action_mode}")
+    console.print(f"[bold cyan]Preset:[/bold cyan] {preset.name} ([dim]{preset.description}[/dim])")
+    console.print(f"[bold]Target apps:[/bold] {', '.join(target_apps)} | [bold]Mode:[/bold] {action_mode} (att={int(target_vol*100)}%)")
     if debug_enabled:
+        console.print(f"[bold magenta]Debug screenshot mode ENABLED[/bold magenta] (captures -> [cyan]{debug_dir}[/cyan])")
         console.print(f"[bold magenta]Debug screenshot mode ENABLED[/bold magenta] (captures -> [cyan]{debug_dir}[/cyan])")
 
     # Ring buffer for YAMNet (0.975s = 15600 samples)
@@ -248,16 +320,26 @@ def cmd_test_file(args: argparse.Namespace) -> None:
         console.print(f"[bold red]Error: File not found: {file_path}[/bold red]")
         sys.exit(1)
 
+    config = load_config(args.config)
+    preset_name = getattr(args, "preset", None) or config.preset
+    preset = get_preset(config, preset_name)
+
+    ad_thresh = args.ad_thresh if args.ad_thresh is not None else preset.ad_thresh
+    sports_thresh = args.sports_thresh if args.sports_thresh is not None else preset.sports_thresh
+
     console.print(f"[bold green]Analyzing file:[/bold green] {file_path}")
+    console.print(f"[bold cyan]Preset:[/bold cyan] {preset.name}")
     model_path, class_map = ensure_yamnet_assets()
     yamnet = YAMNetModel(model_path, class_map)
     detector = BasketballDetector(
-        ad_threshold=args.ad_thresh,
-        sports_threshold=args.sports_thresh,
+        ad_threshold=ad_thresh,
+        sports_threshold=sports_thresh,
+        preset=preset,
     )
     state_machine = BroadcastStateMachine(
-        ad_threshold=args.ad_thresh,
-        sports_threshold=args.sports_thresh,
+        ad_threshold=ad_thresh,
+        sports_threshold=sports_thresh,
+        preset=preset,
     )
 
     capture = FileAudioCapture(file_path=file_path, chunk_seconds=0.5, realtime=args.realtime)
@@ -307,7 +389,14 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         "custom machine-learning classifier tailored to this game's commentators and commercials.\n"
     )
 
-    controller = PulseController()
+    config = load_config(args.config)
+    default_sink = getattr(args, "default_sink", None) or config.audio.default_sink
+    fallback_sink = getattr(args, "fallback_sink", None) or config.audio.fallback_sink
+    controller = PulseController(
+        default_sink=default_sink,
+        fallback_sink=fallback_sink,
+        use_bridge=False,
+    )
     monitor = controller.get_monitor_source()
     console.print(f"Monitoring source: [cyan]{monitor}[/cyan]\n")
 
@@ -351,29 +440,47 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="shutup-ads",
-        description="Real-time basketball broadcast commercial detector and stream attenuator.",
+        description="Real-time sports broadcast commercial detector and stream attenuator.",
     )
+    common_parser = argparse.ArgumentParser(add_help=False)
+    common_parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to custom config.toml file (defaults to ./config.toml or ~/.config/shutup-ads/config.toml)",
+    )
+
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     # run command
-    run_parser = subparsers.add_parser("run", help="Run real-time commercial detector and stream attenuator.")
+    run_parser = subparsers.add_parser(
+        "run",
+        parents=[common_parser],
+        help="Run real-time commercial detector and stream attenuator.",
+    )
+    run_parser.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        help="Sport / broadcast preset to use (e.g. basketball, football, soccer, general_sports)",
+    )
     run_parser.add_argument(
         "--app",
         type=str,
-        default=",".join(DEFAULT_TARGET_APPS),
-        help=f"Comma-separated target application names (default: {','.join(DEFAULT_TARGET_APPS)})",
+        default=None,
+        help=f"Comma-separated target application names (default from config: {','.join(DEFAULT_TARGET_APPS)})",
     )
     run_parser.add_argument(
         "--mode",
         choices=["attenuate", "mute", "dry_run"],
-        default="attenuate",
+        default=None,
         help="Action on ad detection: attenuate (reduce vol), mute (0 vol), or dry_run (monitor only)",
     )
     run_parser.add_argument(
         "--ad-volume",
         type=float,
-        default=15.0,
-        help="Target volume percentage when attenuated (default: 15.0)",
+        default=None,
+        help="Target volume percentage when attenuated (default from config: 15.0)",
     )
     run_parser.add_argument(
         "--dry-run",
@@ -398,7 +505,7 @@ def main() -> None:
     run_parser.add_argument(
         "--debug-dir",
         type=str,
-        default="debug_captures",
+        default=None,
         help="Directory to save debug transition screenshots and metadata (default: debug_captures)",
     )
     run_parser.add_argument(
@@ -408,48 +515,82 @@ def main() -> None:
         help="PulseAudio monitor source (defaults to auto-detected default sink monitor)",
     )
     run_parser.add_argument(
+        "--default-sink",
+        type=str,
+        default=None,
+        help="PulseAudio physical output sink name (e.g. alsa_output.pci-...)",
+    )
+    run_parser.add_argument(
+        "--fallback-sink",
+        type=str,
+        default=None,
+        help="Fallback sink if output discovery fails (default: @DEFAULT_SINK@)",
+    )
+    run_parser.add_argument(
         "--ad-thresh",
         type=float,
-        default=0.40,
-        help="Ad probability threshold to trigger commercial state (default: 0.40)",
+        default=None,
+        help="Ad probability threshold to trigger commercial state (default from preset: 0.40)",
     )
     run_parser.add_argument(
         "--sports-thresh",
         type=float,
-        default=0.06,
-        help="Sports action score threshold to return to live sports (default: 0.06)",
+        default=None,
+        help="Sports action score threshold to return to live sports (default from preset: 0.06)",
     )
     run_parser.add_argument(
         "--ad-delay",
         type=float,
-        default=3.5,
-        help="Persistence seconds required before entering commercial state (default: 3.5)",
+        default=None,
+        help="Persistence seconds required before entering commercial state (default from preset: 3.5)",
     )
     run_parser.add_argument(
         "--sports-delay",
         type=float,
-        default=1.0,
-        help="Persistence seconds required before returning to sports state (default: 1.0)",
+        default=None,
+        help="Persistence seconds required before returning to sports state (default from preset: 1.0)",
+    )
+
+    # list-presets command
+    subparsers.add_parser(
+        "list-presets",
+        parents=[common_parser],
+        help="List available sport & broadcast presets and their parameters.",
     )
 
     # list-devices command
-    subparsers.add_parser("list-devices", help="List audio sinks, monitors, and active stream inputs.")
+    subparsers.add_parser(
+        "list-devices",
+        parents=[common_parser],
+        help="List audio sinks, monitors, and active stream inputs.",
+    )
 
     # test command
-    test_parser = subparsers.add_parser("test", help="Evaluate commercial detection on a recorded media file.")
+    test_parser = subparsers.add_parser(
+        "test",
+        parents=[common_parser],
+        help="Evaluate commercial detection on a recorded media file.",
+    )
     test_parser.add_argument("--file", type=str, required=True, help="Path to audio/video file")
+    test_parser.add_argument("--preset", type=str, default=None, help="Broadcast preset to evaluate with")
     test_parser.add_argument("--realtime", action="store_true", help="Simulate real-time streaming pace")
-    test_parser.add_argument("--ad-thresh", type=float, default=0.50)
-    test_parser.add_argument("--sports-thresh", type=float, default=0.30)
+    test_parser.add_argument("--ad-thresh", type=float, default=None)
+    test_parser.add_argument("--sports-thresh", type=float, default=None)
 
     # calibrate command
-    cal_parser = subparsers.add_parser("calibrate", help="Record live stream samples to train a custom embedding head.")
+    cal_parser = subparsers.add_parser(
+        "calibrate",
+        parents=[common_parser],
+        help="Record live stream samples to train a custom embedding head.",
+    )
     cal_parser.add_argument("--duration", type=int, default=20, help="Duration in seconds for each phase (default: 20)")
 
     args = parser.parse_args()
 
     if args.subcommand == "run":
         cmd_run(args)
+    elif args.subcommand == "list-presets":
+        cmd_list_presets(args)
     elif args.subcommand == "list-devices":
         cmd_list_devices(args)
     elif args.subcommand == "test":

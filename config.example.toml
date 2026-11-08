@@ -1,0 +1,94 @@
+# shutup-ads Configuration File
+# Copy this file to config.toml or ~/.config/shutup-ads/config.toml
+# You can also specify a custom config with: shutup-ads run --config /path/to/config.toml
+
+# Active broadcast preset: "basketball", "football", "soccer", "general_sports", or any custom preset below
+preset = "basketball"
+
+# Debug settings
+debug = false
+debug_dir = "debug_captures"
+
+[audio]
+# PulseAudio / PipeWire hardware sink configuration.
+# Leave empty ("") to automatically query the system's active default sink.
+# If you want to lock shutup-ads to a specific device, specify its name here.
+# Run `shutup-ads list-devices` or `pactl list short sinks` to find sink names.
+# Example:
+# default_sink = "alsa_output..."
+default_sink = ""
+
+# Fallback sink used during cleanup if auto-detection fails.
+# PulseAudio supports "@DEFAULT_SINK@" as a generic target.
+fallback_sink = "@DEFAULT_SINK@"
+
+# Audio monitor source to capture for YAMNet analysis.
+# Leave empty to automatically use the virtual bridge monitor or default sink monitor.
+# Example: "alsa_output....monitor"
+source = ""
+
+# Virtual Audio Bridge null-sink name
+bridge_sink_name = "shutup_ads_bridge"
+use_bridge = true
+
+# Application streams to watch and attenuate during commercial breaks
+target_apps = [
+    "firefox",
+    "firefox developer edition",
+    "sunshine",
+    "ff",
+]
+
+# Action mode on commercial break:
+# - "attenuate": Reduce volume to ad_volume %
+# - "mute": Completely mute volume (0%)
+# - "dry_run": Monitor and detect only without modifying volume
+action_mode = "attenuate"
+
+# Volume level when attenuated (percentage, 0.0 to 100.0)
+ad_volume = 15.0
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Sport & Broadcast Presets
+# ════════════════════════════════════════════════════════════════════════════
+
+[presets.basketball]
+name = "Basketball"
+description = "NBA / College basketball (court squeaks, whistle, buzzer, crowd cheering)"
+ad_thresh = 0.40        # Commercial break detection threshold (0.0 to 1.0)
+sports_thresh = 0.06    # Live gameplay return threshold (0.0 to 1.0)
+ad_delay = 3.5          # Seconds of sustained ad music required before muting/attenuating
+sports_delay = 1.0      # Seconds of basketball action required before restoring full volume
+min_ad_duration = 15.0  # Minimum ad break duration guard (seconds)
+max_ad_duration = 270.0 # Failsafe auto-unmute after 4.5 minutes
+
+[presets.football]
+name = "American Football"
+description = "NFL / College football (referee whistles, crowd cheering, band music)"
+ad_thresh = 0.45
+sports_thresh = 0.08
+ad_delay = 3.5
+sports_delay = 1.2
+min_ad_duration = 15.0
+max_ad_duration = 270.0
+
+[presets.soccer]
+name = "Soccer"
+description = "Soccer / Football match (continuous crowd cheering, referee whistle, stadium chants)"
+ad_thresh = 0.45
+sports_thresh = 0.08
+ad_delay = 4.0
+sports_delay = 1.2
+min_ad_duration = 15.0
+max_ad_duration = 270.0
+
+[presets.general_sports]
+name = "General Sports"
+description = "Generic sports broadcast with referee whistle and arena crowd cheering"
+ad_thresh = 0.42
+sports_thresh = 0.08
+ad_delay = 3.5
+sports_delay = 1.2
+min_ad_duration = 15.0
+max_ad_duration = 270.0

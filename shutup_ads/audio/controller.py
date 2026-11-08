@@ -49,16 +49,21 @@ class PulseController:
         attenuate_volume: float = 0.15,
         action_mode: str = "attenuate",  # "attenuate", "mute", or "dry_run"
         use_bridge: bool = True,
+        default_sink: str | None = None,
+        fallback_sink: str | None = None,
+        bridge_sink_name: str = "shutup_ads_bridge",
     ):
         self.target_apps = [app.lower().strip() for app in target_apps]
         self.attenuate_volume = float(attenuate_volume)
         self.action_mode = action_mode
         self.use_bridge = use_bridge
+        self.default_sink_name: str = default_sink or ""
+        self.fallback_sink: str = fallback_sink or "@DEFAULT_SINK@"
+        self.bridge_sink_name: str = bridge_sink_name
 
         self._pulse: pulsectl.Pulse | None = None
         self._tracked_streams: dict[int, StreamInfo] = {}
 
-        self.default_sink_name: str = ""
         self._bridge_null_mod: str | None = None
         self._bridge_loop_mod: str | None = None
         self._loopback_si_id: int | None = None
@@ -91,19 +96,20 @@ class PulseController:
 
     def setup_bridge(self) -> None:
         """Create virtual null sink and loopback for clean unattenuated audio capture."""
-        try:
-            pulse = self._get_pulse()
-            server_info = pulse.server_info()
-            self.default_sink_name = server_info.default_sink_name
-        except (pulsectl.PulseError, OSError) as e:
-            logger.warning("Failed to query default sink via pulsectl: %s", e)
-            self.default_sink_name = "alsa_output.pci-0000_63_00.6.pro-output-0"
+        if not self.default_sink_name:
+            try:
+                pulse = self._get_pulse()
+                server_info = pulse.server_info()
+                self.default_sink_name = server_info.default_sink_name
+            except (pulsectl.PulseError, OSError) as e:
+                logger.warning("Failed to query default sink via pulsectl: %s", e)
+                self.default_sink_name = self.fallback_sink or "@DEFAULT_SINK@"
 
         # Unload any stale leftover bridge modules
         try:
             res = subprocess.run(["pactl", "list", "short", "modules"], check=False, capture_output=True, text=True).stdout
             for line in res.splitlines():
-                if "shutup_ads_bridge" in line:
+                if self.bridge_sink_name in line:
                     mod_id = line.split()[0]
                     subprocess.run(["pactl", "unload-module", mod_id], check=False, capture_output=True)
         except (subprocess.SubprocessError, OSError) as e:
@@ -113,7 +119,7 @@ class PulseController:
 
         # 1. Load null sink
         r1 = subprocess.run(
-            ["pactl", "load-module", "module-null-sink", "sink_name=shutup_ads_bridge", "sink_properties=device.description=ShutupAdsBridge"],
+            ["pactl", "load-module", "module-null-sink", f"sink_name={self.bridge_sink_name}", "sink_properties=device.description=ShutupAdsBridge"],
             check=False,
             capture_output=True, text=True,
         )
@@ -124,7 +130,7 @@ class PulseController:
 
         # 2. Load loopback to default physical speakers
         r2 = subprocess.run(
-            ["pactl", "load-module", "module-loopback", "source=shutup_ads_bridge.monitor", f"sink={self.default_sink_name}"],
+            ["pactl", "load-module", "module-loopback", f"source={self.bridge_sink_name}.monitor", f"sink={self.default_sink_name}"],
             check=False,
             capture_output=True, text=True,
         )
@@ -139,7 +145,7 @@ class PulseController:
     def get_monitor_source(self) -> str:
         """Resolve the monitor source name for audio analysis."""
         if self.use_bridge and self._bridge_null_mod:
-            return "shutup_ads_bridge.monitor"
+            return f"{self.bridge_sink_name}.monitor"
 
         try:
             pulse = self._get_pulse()
@@ -181,18 +187,18 @@ class PulseController:
                         stream_info = self._tracked_streams[si.index]
                         stream_info.is_attenuated = self._is_attenuated
 
-                    # If virtual bridge is active, ensure target stream is routed to shutup_ads_bridge
+                    # If virtual bridge is active, ensure target stream is routed to bridge
                     if self.use_bridge and self._bridge_null_mod:
                         # Check if it needs to be moved to the bridge
                         try:
-                            bridge_sink = pulse.get_sink_by_name("shutup_ads_bridge")
+                            bridge_sink = pulse.get_sink_by_name(self.bridge_sink_name)
                             if si.sink != bridge_sink.index:
-                                subprocess.run(["pactl", "move-sink-input", str(si.index), "shutup_ads_bridge"], check=False, capture_output=True)
+                                subprocess.run(["pactl", "move-sink-input", str(si.index), self.bridge_sink_name], check=False, capture_output=True)
                                 subprocess.run(["pactl", "set-sink-input-volume", str(si.index), "100%"], check=False, capture_output=True)
                                 subprocess.run(["pactl", "set-sink-input-mute", str(si.index), "0"], check=False, capture_output=True)
                         except (pulsectl.PulseError, OSError, AttributeError) as e:
                             logger.debug("Failed checking bridge sink: %s", e)
-                            subprocess.run(["pactl", "move-sink-input", str(si.index), "shutup_ads_bridge"], check=False, capture_output=True)
+                            subprocess.run(["pactl", "move-sink-input", str(si.index), self.bridge_sink_name], check=False, capture_output=True)
 
                     matched.append(stream_info)
         except (pulsectl.PulseError, OSError) as e:
@@ -284,7 +290,7 @@ class PulseController:
             subprocess.run(["pactl", "set-sink-input-volume", str(self._loopback_si_id), "100%"], check=False, capture_output=True)
 
         # 2. Move tracked streams back to default physical sink
-        target_sink = self.default_sink_name or "alsa_output.pci-0000_63_00.6.pro-output-0"
+        target_sink = self.default_sink_name or self.fallback_sink or "@DEFAULT_SINK@"
         for idx in list(self._tracked_streams.keys()):
             try:
                 subprocess.run(["pactl", "move-sink-input", str(idx), target_sink], check=False, capture_output=True)

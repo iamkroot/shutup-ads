@@ -40,3 +40,6 @@ debug_captures/
 .idea/
 .DS_Store
 *.swp
+
+# Local user configuration
+config.toml
