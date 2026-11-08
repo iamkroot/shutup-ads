@@ -165,16 +165,22 @@ class PulseController:
                             is_muted=bool(si.mute),
                         )
                         self._tracked_streams[si.index] = stream_info
-
-                        # Move target to shutup_ads_bridge if bridge is active
-                        if self.use_bridge and self._bridge_null_mod:
-                            subprocess.run(["pactl", "move-sink-input", str(si.index), "shutup_ads_bridge"], capture_output=True)
-                            # Ensure full volume into bridge
-                            subprocess.run(["pactl", "set-sink-input-volume", str(si.index), "100%"], capture_output=True)
-                            subprocess.run(["pactl", "set-sink-input-mute", str(si.index), "0"], capture_output=True)
                     else:
                         stream_info = self._tracked_streams[si.index]
                         stream_info.is_attenuated = self._is_attenuated
+
+                    # If virtual bridge is active, ensure target stream is routed to shutup_ads_bridge
+                    if self.use_bridge and self._bridge_null_mod:
+                        # Check if it needs to be moved to the bridge
+                        try:
+                            bridge_sink = pulse.get_sink_by_name("shutup_ads_bridge")
+                            if si.sink != bridge_sink.index:
+                                subprocess.run(["pactl", "move-sink-input", str(si.index), "shutup_ads_bridge"], capture_output=True)
+                                subprocess.run(["pactl", "set-sink-input-volume", str(si.index), "100%"], capture_output=True)
+                                subprocess.run(["pactl", "set-sink-input-mute", str(si.index), "0"], capture_output=True)
+                        except Exception:
+                            subprocess.run(["pactl", "move-sink-input", str(si.index), "shutup_ads_bridge"], capture_output=True)
+
                     matched.append(stream_info)
         except Exception as e:
             logger.debug("Error scanning sink inputs: %s", e)
