@@ -28,6 +28,7 @@ ENV/
 
 # Caches & downloaded models
 .cache/
+debug_captures/
 *.onnx
 *.tflite
 *.joblib
