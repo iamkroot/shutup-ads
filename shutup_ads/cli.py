@@ -179,11 +179,15 @@ def cmd_run(args: argparse.Namespace) -> None:
                     if now - last_log_time >= 3.0:
                         last_log_time = now
                         stream_summary = ", ".join(f"Stream {s.index}: {s.app_name} ({int(s.current_volume*100)}%)" for s in active_streams)
+                        top_2 = yamnet.get_top_k(yamnet_out.scores, k=2)
+                        top_2_str = ", ".join(f"{name} {prob*100:.0f}%" for name, prob in top_2)
                         console.print(
                             f"[dim]{time.strftime('%H:%M:%S')}[/dim] "
-                            f"State: [bold]{state_machine.current_state.value}[/bold] | "
-                            f"Ad Prob: {metrics.ad_probability*100:4.1f}% | "
-                            f"Sports: {metrics.sports_score*100:4.1f}% | "
+                            f"State: [bold]{state_machine.current_state.value:<14}[/bold] │ "
+                            f"Ad Prob: {metrics.ad_probability*100:4.1f}% │ "
+                            f"Sports: {metrics.sports_score*100:4.1f}% (court: {metrics.court_score*100:.1f}%, crowd: {metrics.crowd_score*100:.1f}%) │ "
+                            f"Top: [{top_2_str}] │ "
+                            f"Music: {metrics.music_score*100:4.1f}% │ "
                             f"Streams: [{stream_summary or 'none'}]",
                             highlight=False,
                         )
